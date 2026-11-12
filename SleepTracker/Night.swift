@@ -3,10 +3,30 @@
 
 import Foundation
 
+enum NightSound: String, Codable, CaseIterable {
+    case snoring
+    case speech
+    case cough
+
+    var title: String {
+        switch self {
+        case .snoring: "Possible snoring"
+        case .speech: "Possible sleep talking"
+        case .cough: "Possible coughing"
+        }
+    }
+}
+
 struct SoundClip: Codable, Identifiable {
     let id: UUID
     let startedAt: Date
     let duration: TimeInterval
+    var sounds: [NightSound]?
+
+    // Saved clips from earlier versions were all flagged as possible snoring.
+    var soundTitle: String {
+        (sounds ?? [.snoring]).map(\.title).joined(separator: " · ")
+    }
 }
 
 struct Night: Codable, Identifiable {

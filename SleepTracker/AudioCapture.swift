@@ -1,5 +1,5 @@
 // AudioCapture writes short microphone segments, including while the phone is locked.
-// NightAnalysis checks them for possible snoring when the app is open.
+// NightAnalysis checks them for snoring, speech, and coughing when the app is open.
 
 import AVFoundation
 import SoundAnalysis
@@ -12,7 +12,7 @@ enum CaptureError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .microphoneUnavailable: "No microphone input is available."
-        case .classifierUnavailable: "Snoring detection is unavailable on this device."
+        case .classifierUnavailable: "Sound detection is unavailable on this device."
         case .unsupportedAudioFormat: "The microphone format couldn’t be converted."
         case .writeClip(let error): "Couldn’t write the recording. \(details(error))"
         case .analyzeClip(let error): "Couldn’t analyze the recording. \(details(error))"
@@ -26,18 +26,16 @@ enum CaptureError: LocalizedError {
     }
 }
 
-private final class SnoreObserver: NSObject, SNResultsObserving {
-    private let label: String
+private final class NightSoundObserver: NSObject, SNResultsObserving {
     private let lock = NSLock()
-    private var detected = false
+    private var detected: Set<NightSound> = []
     private var failure: Error?
-
-    init(label: String) { self.label = label }
 
     func request(_ request: SNRequest, didProduce result: SNResult) {
         guard let classification = (result as? SNClassificationResult)?.classifications.first,
-              classification.identifier == label, classification.confidence >= 0.55 else { return }
-        lock.withLock { detected = true }
+              classification.confidence >= 0.55,
+              let sound = NightSound(rawValue: classification.identifier) else { return }
+        lock.withLock { _ = detected.insert(sound) }
     }
 
     func request(_ request: SNRequest, didFailWithError error: Error) {
@@ -46,10 +44,10 @@ private final class SnoreObserver: NSObject, SNResultsObserving {
 
     func requestDidComplete(_ request: SNRequest) {}
 
-    func result() throws -> Bool {
+    func result() throws -> [NightSound] {
         try lock.withLock {
             if let failure { throw failure }
-            return detected
+            return NightSound.allCases.filter { detected.contains($0) }
         }
     }
 }
@@ -253,7 +251,7 @@ enum NightAnalysis {
     ) async throws {
         guard let pending = original.pendingClips, !pending.isEmpty else { return }
         let request = try SNClassifySoundRequest(classifierIdentifier: .version1)
-        guard request.knownClassifications.contains("snoring") else {
+        guard Set(NightSound.allCases.map(\.rawValue)).isSubset(of: Set(request.knownClassifications)) else {
             throw CaptureError.classifierUnavailable
         }
 
@@ -267,10 +265,14 @@ enum NightAnalysis {
         for clip in pending {
             if Task.isCancelled { break }
             do {
-                if try containsSnoring(at: archive.clipURL(clip, in: night), request: request) {
-                    night.clips.append(clip)
-                } else {
+                let sounds = try detectSounds(at: archive.clipURL(clip, in: night), request: request)
+                if sounds.isEmpty {
                     discarded.append(clip)
+                } else {
+                    // Several distinct sounds can occur in a single recording segment.
+                    var labeledClip = clip
+                    labeledClip.sounds = sounds
+                    night.clips.append(labeledClip)
                 }
                 completed.insert(clip.id)
                 consecutiveFailures = 0
@@ -304,8 +306,8 @@ enum NightAnalysis {
         }
     }
 
-    private static func containsSnoring(at url: URL, request: SNClassifySoundRequest) throws -> Bool {
-        let observer = SnoreObserver(label: "snoring")
+    private static func detectSounds(at url: URL, request: SNClassifySoundRequest) throws -> [NightSound] {
+        let observer = NightSoundObserver()
         let analyzer = try SNAudioFileAnalyzer(url: url)
         try analyzer.add(request, withObserver: observer)
         analyzer.analyze()

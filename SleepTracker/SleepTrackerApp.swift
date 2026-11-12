@@ -48,7 +48,7 @@ struct SleepTrackerView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Allow microphone access in Settings to listen for snoring.")
+            Text("Allow microphone access in Settings to detect nighttime sounds.")
         }
         .alert("Sleep tracker", isPresented: Binding(
             get: { model.problem != nil },
@@ -94,7 +94,7 @@ struct SleepTrackerView: View {
                     } else {
                         Text("Ready for bed?")
                             .font(.system(.largeTitle, design: .rounded, weight: .semibold))
-                        Text("Set your iPhone on your bedside table. Sleep tracker checks for snoring when you end the session.")
+                        Text("Set your iPhone on your bedside table. Sleep tracker checks for nighttime sounds when you end the session.")
                             .foregroundStyle(muted)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -278,9 +278,9 @@ private struct NightDetail: View {
                         timeline
                     }
 
-                    Text("Possible snoring").font(.title3.bold()).accessibilityAddTraits(.isHeader)
+                    Text("Detected sounds").font(.title3.bold()).accessibilityAddTraits(.isHeader)
                     if night.clips.isEmpty, !night.needsAnalysis {
-                        Text("No possible snoring clips were saved.")
+                        Text("No nighttime sounds were flagged.")
                             .foregroundStyle(muted)
                     }
                     ForEach(night.clips) { clip in
@@ -291,7 +291,12 @@ private struct NightDetail: View {
                                 Image(systemName: model.playingID == clip.id ? "stop.circle.fill" : "play.circle.fill")
                                     .font(.title)
                                     .foregroundStyle(accent)
-                                Text(clip.startedAt, style: .time).font(.headline.monospacedDigit())
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(clip.soundTitle).font(.headline)
+                                    Text(clip.startedAt, style: .time)
+                                        .font(.subheadline.monospacedDigit())
+                                        .foregroundStyle(muted)
+                                }
                                 Spacer()
                                 Text(durationText(clip.duration))
                                     .font(.subheadline)
@@ -301,7 +306,7 @@ private struct NightDetail: View {
                             .background(surface, in: RoundedRectangle(cornerRadius: 14))
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel(model.playingID == clip.id ? "Stop clip" : "Play clip at \(clip.startedAt.formatted(date: .omitted, time: .shortened))")
+                        .accessibilityLabel(model.playingID == clip.id ? "Stop clip" : "Play \(clip.soundTitle) at \(clip.startedAt.formatted(date: .omitted, time: .shortened))")
                         .disabled(model.startedAt != nil || model.isBusy)
                     }
                     if model.startedAt != nil, !night.clips.isEmpty {
