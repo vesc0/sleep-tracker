@@ -1,0 +1,187 @@
+// Coordinates recording, analysis, and playback on the main actor.
+// Publishes session history, progress, and errors for the SwiftUI screens.
+
+import AVFoundation
+import SwiftUI
+
+@MainActor
+final class SessionModel: NSObject, ObservableObject, AVAudioPlayerDelegate {
+    @Published private(set) var nights: [Night] = []
+    @Published private(set) var startedAt: Date?
+    @Published private(set) var isBusy = false
+    @Published private(set) var playingID: UUID?
+    @Published private(set) var analyzingID: UUID?
+    @Published private(set) var analysisProblems: [UUID: String] = [:]
+    @Published var problem: String?
+    @Published var showMicrophoneSettings = false
+
+    private var archive: NightArchive?
+    private var capture: AudioCapture?
+    private var player: AVAudioPlayer?
+    private var analysisTask: Task<Void, Never>?
+
+    override init() {
+        super.init()
+        do {
+            let archive = try NightArchive()
+            self.archive = archive
+            nights = try archive.load()
+        } catch {
+            problem = error.localizedDescription
+        }
+    }
+
+    func start() async {
+        guard capture == nil, !isBusy, analyzingID == nil else { return }
+        stopPlayback()
+        isBusy = true
+        defer { isBusy = false }
+        guard await AVAudioApplication.requestRecordPermission() else {
+            showMicrophoneSettings = true
+            return
+        }
+        do {
+            let archive = try self.archive ?? NightArchive()
+            self.archive = archive
+            let now = Date()
+            let night = Night(id: UUID(), startedAt: now, endedAt: now, pendingClips: [])
+            let capture = AudioCapture(night: night, archive: archive) { [weak self] error in
+                Task { @MainActor in
+                    await self?.finish(interrupted: true)
+                    self?.problem = error.localizedDescription
+                }
+            }
+            try capture.start()
+            self.capture = capture
+            startedAt = now
+        } catch {
+            problem = error.localizedDescription
+        }
+    }
+
+    @discardableResult
+    func finish(interrupted: Bool = false) async -> Night? {
+        guard let capture, !isBusy else { return nil }
+        isBusy = true
+        defer {
+            startedAt = nil
+            self.capture = nil
+            isBusy = false
+        }
+        do {
+            let night = try await capture.finish(interrupted: interrupted)
+            nights.insert(night, at: 0)
+            return night
+        } catch {
+            problem = error.localizedDescription
+            return nil
+        }
+    }
+
+    func handleInterruption(_ notification: Notification) async {
+        guard notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
+            == AVAudioSession.InterruptionType.began.rawValue else { return }
+        stopPlayback()
+        await finish(interrupted: true)
+    }
+
+    func handleEngineChange(_ notification: Notification) async {
+        guard capture?.lostInput(notification) == true else { return }
+        await finish(interrupted: true)
+    }
+
+    func analyze(_ id: UUID) {
+        guard analyzingID == nil, capture == nil, !isBusy,
+              let archive, let night = nights.first(where: { $0.id == id }), night.needsAnalysis else { return }
+        analysisProblems[id] = nil
+        analyzingID = id
+        // Prevent auto-lock while Sound Analysis runs.
+        UIApplication.shared.isIdleTimerDisabled = true
+        analysisTask = Task.detached(priority: .utility) { [weak self] in
+            var problem: String?
+            do {
+                try await NightAnalysis.run(night, archive: archive) { [weak self] updated in
+                    await self?.updateNight(updated)
+                }
+            } catch {
+                if !Task.isCancelled { problem = error.localizedDescription }
+            }
+            await self?.endAnalysis(id: id, problem: problem)
+        }
+    }
+
+    func pauseAnalysis() {
+        guard let analysisTask else { return }
+        UIApplication.shared.isIdleTimerDisabled = false
+        analysisTask.cancel()
+    }
+
+    private func updateNight(_ night: Night) {
+        if let index = nights.firstIndex(where: { $0.id == night.id }) {
+            nights[index] = night
+        }
+    }
+
+    private func endAnalysis(id: UUID, problem: String?) {
+        UIApplication.shared.isIdleTimerDisabled = false
+        analyzingID = nil
+        analysisTask = nil
+        analysisProblems[id] = problem
+    }
+
+    func delete(_ night: Night) {
+        guard analyzingID != night.id else { return }
+        stopPlayback()
+        do {
+            try archive?.delete(night)
+            nights.removeAll { $0.id == night.id }
+            analysisProblems[night.id] = nil
+        } catch {
+            problem = error.localizedDescription
+        }
+    }
+
+    func play(_ clip: SoundClip, in night: Night) {
+        guard capture == nil, !isBusy, let archive else { return }
+        let alreadyPlaying = playingID == clip.id
+        stopPlayback()
+        guard !alreadyPlaying else { return }
+        do {
+            let audio = AVAudioSession.sharedInstance()
+            try audio.setCategory(.playback, mode: .default)
+            try audio.setActive(true)
+            let player = try AVAudioPlayer(contentsOf: archive.clipURL(clip, in: night))
+            player.delegate = self
+            self.player = player
+            guard player.play() else { throw CocoaError(.fileReadUnknown) }
+            playingID = clip.id
+        } catch {
+            stopPlayback()
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            problem = "The clip could not be played."
+        }
+    }
+
+    func stopPlayback() {
+        guard let player else { return }
+        player.stop()
+        self.player = nil
+        playingID = nil
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    }
+
+    nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        Task { @MainActor in
+            // Ignore callbacks from a player that has already been replaced.
+            if self.player === player { stopPlayback() }
+        }
+    }
+
+    nonisolated func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
+        Task { @MainActor in
+            guard self.player === player else { return }
+            stopPlayback()
+            problem = "The clip could not be played."
+        }
+    }
+}
