@@ -15,6 +15,60 @@ final class SessionModel: NSObject, ObservableObject, AVAudioPlayerDelegate {
     @Published var problem: String?
     @Published var showMicrophoneSettings = false
 
+    #if DEBUG
+    @Published private(set) var sampleNights: [Night] = []
+    #endif
+
+    var historyNights: [Night] {
+        #if DEBUG
+        return (nights + sampleNights).sorted { $0.startedAt > $1.startedAt }
+        #else
+        return nights
+        #endif
+    }
+
+    func isSampleNight(_ id: UUID) -> Bool {
+        #if DEBUG
+        return sampleNights.contains { $0.id == id }
+        #else
+        return false
+        #endif
+    }
+
+    #if DEBUG
+    func addSampleData(now: Date = .now, calendar: Calendar = .current) {
+        guard sampleNights.isEmpty else { return }
+
+        // Leave gaps and vary session lengths and sound labels to exercise the charts.
+        let today = calendar.startOfDay(for: now)
+        sampleNights = (1...60).compactMap { offset in
+            guard !offset.isMultiple(of: 9),
+                  let date = calendar.date(byAdding: .day, value: -offset, to: today),
+                  let start = calendar.date(bySettingHour: 22 + offset % 2,
+                                            minute: (offset * 13) % 60, second: 0, of: date) else { return nil }
+
+            let duration = TimeInterval((330 + (offset * 47) % 210) * 60)
+            let end = start.addingTimeInterval(duration)
+            guard end <= now else { return nil }
+
+            let clipCount = (offset * 11) % 19
+            let clips = (0..<clipCount).map { index in
+                let position = duration * Double(index + 1) / Double(clipCount + 1)
+                let sound = NightSound.allCases[(offset + index) % NightSound.allCases.count]
+                let sounds: [NightSound] = index.isMultiple(of: 5) && sound == .snoring
+                    ? [.snoring, .speech] : [sound]
+                return SoundClip(id: UUID(), startedAt: start.addingTimeInterval(position),
+                                 duration: 8, sounds: sounds)
+            }
+            return Night(id: UUID(), startedAt: start, endedAt: end, isComplete: true, clips: clips)
+        }
+    }
+
+    func clearSampleData() {
+        sampleNights.removeAll()
+    }
+    #endif
+
     private var archive: NightArchive?
     private var capture: AudioCapture?
     private var player: AVAudioPlayer?
@@ -130,6 +184,12 @@ final class SessionModel: NSObject, ObservableObject, AVAudioPlayerDelegate {
     }
 
     func delete(_ night: Night) {
+        #if DEBUG
+        if isSampleNight(night.id) {
+            sampleNights.removeAll { $0.id == night.id }
+            return
+        }
+        #endif
         guard analyzingID != night.id else { return }
         stopPlayback()
         do {
@@ -141,8 +201,8 @@ final class SessionModel: NSObject, ObservableObject, AVAudioPlayerDelegate {
         }
     }
 
-    func play(_ clip: SoundClip, in night: Night) {
-        guard capture == nil, !isBusy, let archive else { return }
+    func play(_ clip: SoundClip, in night: Night, from fraction: Double = 0) {
+        guard !isSampleNight(night.id), capture == nil, !isBusy, let archive else { return }
         let alreadyPlaying = playingID == clip.id
         stopPlayback()
         guard !alreadyPlaying else { return }
@@ -153,6 +213,7 @@ final class SessionModel: NSObject, ObservableObject, AVAudioPlayerDelegate {
             let player = try AVAudioPlayer(contentsOf: archive.clipURL(clip, in: night))
             player.delegate = self
             self.player = player
+            player.currentTime = min(fraction * player.duration, max(0, player.duration - 0.01))
             guard player.play() else { throw CocoaError(.fileReadUnknown) }
             playingID = clip.id
         } catch {
@@ -160,6 +221,21 @@ final class SessionModel: NSObject, ObservableObject, AVAudioPlayerDelegate {
             try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
             problem = "The clip could not be played."
         }
+    }
+
+    func playbackFraction(for clipID: UUID) -> Double? {
+        guard playingID == clipID, let player, player.duration > 0 else { return nil }
+        return player.currentTime / player.duration
+    }
+
+    func seekPlayback(_ clipID: UUID, to fraction: Double) {
+        guard playingID == clipID, let player else { return }
+        player.currentTime = min(fraction * player.duration, max(0, player.duration - 0.01))
+    }
+
+    func audioURL(for clip: SoundClip, in night: Night) -> URL? {
+        guard !isSampleNight(night.id) else { return nil }
+        return archive?.clipURL(clip, in: night)
     }
 
     func stopPlayback() {

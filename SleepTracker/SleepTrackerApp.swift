@@ -1,5 +1,5 @@
 // App entry point and SwiftUI screens for recording and reviewing sessions.
-// The app shares one SessionModel across the Tonight and History tabs.
+// The app shares one SessionModel across the Track, History, and Trends tabs.
 
 import AVFoundation
 import SwiftUI
@@ -17,10 +17,10 @@ struct SleepTrackerApp: App {
     }
 }
 
-private let nightBackground = Color(red: 0.05, green: 0.06, blue: 0.10)
-private let surface = Color(red: 0.09, green: 0.11, blue: 0.17)
-private let accent = Color(red: 0.77, green: 0.80, blue: 1.0)
-private let muted = Color(red: 0.66, green: 0.70, blue: 0.80)
+let nightBackground = Color(red: 0.05, green: 0.06, blue: 0.10)
+let surface = Color(red: 0.09, green: 0.11, blue: 0.17)
+let accent = Color(red: 0.77, green: 0.80, blue: 1.0)
+let muted = Color(red: 0.66, green: 0.70, blue: 0.80)
 
 struct SleepTrackerView: View {
     @EnvironmentObject private var model: SessionModel
@@ -31,12 +31,15 @@ struct SleepTrackerView: View {
 
     var body: some View {
         TabView(selection: $tab) {
-            tonight
-                .tabItem { Label("Tonight", systemImage: "moon.stars") }
+            track
+                .tabItem { Label("Track", systemImage: "moon.stars") }
                 .tag(0)
             history
                 .tabItem { Label("History", systemImage: "clock") }
                 .tag(1)
+            TrendsView(sessions: model.historyNights) { selectedNight = $0 }
+                .tabItem { Label("Trends", systemImage: "chart.bar") }
+                .tag(2)
         }
         .tint(accent)
         .sheet(item: $selectedNight, onDismiss: model.stopPlayback) { night in
@@ -70,13 +73,14 @@ struct SleepTrackerView: View {
         }
     }
 
-    private var tonight: some View {
+    private var track: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 HStack(spacing: 9) {
                     Image(systemName: "waveform").foregroundStyle(accent)
                     Text("Sleep tracker").font(.headline.weight(.semibold))
                 }
+                .frame(maxWidth: .infinity)
 
                 VStack(spacing: 16) {
                     MoonDial(listening: model.startedAt != nil)
@@ -94,7 +98,7 @@ struct SleepTrackerView: View {
                     } else {
                         Text("Ready for bed?")
                             .font(.system(.largeTitle, design: .rounded, weight: .semibold))
-                        Text("Set your iPhone on your bedside table. Sleep tracker checks for nighttime sounds when you end the session.")
+                        Text("Set your iPhone aside. Sleep tracker checks for nighttime sounds.")
                             .foregroundStyle(muted)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -157,14 +161,27 @@ struct SleepTrackerView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 Text("History").font(.largeTitle.bold()).accessibilityAddTraits(.isHeader)
-                if model.nights.isEmpty {
+                #if DEBUG
+                if model.sampleNights.isEmpty {
+                    Button("Add 60 Days of Sample Data", systemImage: "plus.circle") {
+                        model.addSampleData()
+                    }
+                    .buttonStyle(.bordered)
+                } else {
+                    Button("Clear Sample Data", systemImage: "trash") {
+                        model.clearSampleData()
+                    }
+                    .buttonStyle(.bordered)
+                }
+                #endif
+                if model.historyNights.isEmpty {
                     ContentUnavailableView(
                         "No sessions yet", systemImage: "moon.zzz",
                         description: Text("Your sessions and saved clips will appear here.")
                     )
                     .padding(.vertical, 64)
                 } else {
-                    ForEach(model.nights) { night in
+                    ForEach(model.historyNights) { night in
                         Button { selectedNight = night } label: {
                             NightRow(night: night, title: night.startedAt.formatted(.dateTime.weekday(.wide).month(.abbreviated).day()))
                         }
@@ -208,7 +225,8 @@ private struct MoonDial: View {
     }
 }
 
-private struct NightRow: View {
+struct NightRow: View {
+    @EnvironmentObject private var model: SessionModel
     let night: Night
     let title: String
 
@@ -220,6 +238,9 @@ private struct NightRow: View {
                 .background(accent.opacity(0.10), in: RoundedRectangle(cornerRadius: 12))
             VStack(alignment: .leading, spacing: 4) {
                 Text(title).font(.headline)
+                if model.isSampleNight(night.id) {
+                    Text("Sample session").font(.caption).foregroundStyle(muted)
+                }
                 Text("\(durationText(night.duration)) · \(night.clips.count) \(night.clips.count == 1 ? "clip" : "clips")")
                     .font(.subheadline)
                     .foregroundStyle(muted)
@@ -240,7 +261,7 @@ private struct NightDetail: View {
     @State private var confirmDelete = false
 
     private var night: Night {
-        model.nights.first(where: { $0.id == originalNight.id }) ?? originalNight
+        model.historyNights.first(where: { $0.id == originalNight.id }) ?? originalNight
     }
 
     var body: some View {
@@ -251,10 +272,18 @@ private struct NightDetail: View {
                         .font(.subheadline)
                         .foregroundStyle(muted)
 
+                    if model.isSampleNight(night.id) {
+                        Label("Sample session · Audio unavailable", systemImage: "waveform.slash")
+                            .font(.subheadline)
+                            .foregroundStyle(muted)
+                    }
+
                     HStack(alignment: .top, spacing: 10) {
-                        metric(durationText(night.duration), label: "Time monitored")
+                        metric(durationText(night.duration), label: "Sleep duration")
                         metric(String(night.clips.count), label: "Saved clips")
                     }
+                    Text("Estimated from session length")
+                        .font(.footnote).foregroundStyle(muted)
                     if night.wasInterrupted {
                         Label("Listening ended early. This session may be incomplete.", systemImage: "exclamationmark.circle")
                             .foregroundStyle(muted)
@@ -284,32 +313,9 @@ private struct NightDetail: View {
                             .foregroundStyle(muted)
                     }
                     ForEach(night.clips) { clip in
-                        Button {
-                            model.play(clip, in: night)
-                        } label: {
-                            HStack(spacing: 14) {
-                                Image(systemName: model.playingID == clip.id ? "stop.circle.fill" : "play.circle.fill")
-                                    .font(.title)
-                                    .foregroundStyle(accent)
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(clip.soundTitle).font(.headline)
-                                    Text(clip.startedAt, style: .time)
-                                        .font(.subheadline.monospacedDigit())
-                                        .foregroundStyle(muted)
-                                }
-                                Spacer()
-                                Text(durationText(clip.duration))
-                                    .font(.subheadline)
-                                    .foregroundStyle(muted)
-                            }
-                            .padding(12)
-                            .background(surface, in: RoundedRectangle(cornerRadius: 14))
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel(model.playingID == clip.id ? "Stop clip" : "Play \(clip.soundTitle) at \(clip.startedAt.formatted(date: .omitted, time: .shortened))")
-                        .disabled(model.startedAt != nil || model.isBusy)
+                        ClipRow(clip: clip, night: night)
                     }
-                    if model.startedAt != nil, !night.clips.isEmpty {
+                    if !model.isSampleNight(night.id), model.startedAt != nil, !night.clips.isEmpty {
                         Text("Clips are available to play after the current session ends.")
                             .font(.footnote)
                             .foregroundStyle(muted)
@@ -337,14 +343,15 @@ private struct NightDetail: View {
             .confirmationDialog("Delete this session and its clips?", isPresented: $confirmDelete, titleVisibility: .visible) {
                 Button("Delete session", role: .destructive) {
                     model.delete(night)
-                    if !model.nights.contains(where: { $0.id == night.id }) { dismiss() }
+                    if !model.historyNights.contains(where: { $0.id == night.id }) { dismiss() }
                 }
             }
         }
     }
 
     private var timeline: some View {
-        VStack(spacing: 10) {
+        let playingID = model.playingID
+        return VStack(spacing: 10) {
             Canvas { context, size in
                 let track = CGRect(x: 0, y: size.height / 2 - 2, width: size.width, height: 4)
                 context.fill(Path(roundedRect: track, cornerRadius: 2), with: .color(accent.opacity(0.20)))
@@ -354,7 +361,8 @@ private struct NightDetail: View {
                     let width = max(2, clip.duration / night.duration * size.width)
                     let mark = CGRect(x: min(size.width - width, position * size.width),
                                       y: 0, width: width, height: size.height)
-                    context.fill(Path(roundedRect: mark, cornerRadius: 1), with: .color(accent))
+                    let color = playingID == clip.id ? playbackColor : accent
+                    context.fill(Path(roundedRect: mark, cornerRadius: 1), with: .color(color))
                 }
             }
             .frame(height: 17)
@@ -381,7 +389,179 @@ private struct NightDetail: View {
     }
 }
 
-private func durationText(_ seconds: TimeInterval) -> String {
+private let playbackColor = Color(red: 0.37, green: 0.89, blue: 0.80)
+
+private struct ClipRow: View {
+    let clip: SoundClip
+    let night: Night
+    @EnvironmentObject private var model: SessionModel
+    @State private var expanded = false
+    @State private var startFraction = 0.0
+    @State private var peaks: [Float]?
+    @State private var waveformFailed = false
+
+    private var isPlaying: Bool { model.playingID == clip.id }
+    private var isSample: Bool { model.isSampleNight(night.id) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 12) {
+                if isSample {
+                    Image(systemName: "waveform").font(.title2).foregroundStyle(accent)
+                        .accessibilityHidden(true)
+                } else {
+                    Button {
+                        model.play(clip, in: night, from: startFraction)
+                    } label: {
+                        Image(systemName: isPlaying ? "stop.circle.fill" : "play.circle.fill")
+                            .font(.title)
+                            .foregroundStyle(isPlaying ? playbackColor : accent)
+                            .frame(minWidth: 44, minHeight: 44)
+                    }
+                    .accessibilityLabel(isPlaying ? "Stop clip" : "Play \(clip.soundTitle)")
+                    .disabled(model.startedAt != nil || model.isBusy)
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(clip.soundTitle).font(.headline)
+                    Text(clip.startedAt, style: .time)
+                        .font(.subheadline.monospacedDigit())
+                        .foregroundStyle(muted)
+                }
+                Spacer(minLength: 4)
+                Text(durationText(clip.duration)).font(.subheadline).foregroundStyle(muted)
+                if !isSample {
+                    Button {
+                        expanded.toggle()
+                    } label: {
+                        Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(accent)
+                            .frame(minWidth: 44, minHeight: 44)
+                    }
+                    .accessibilityLabel(expanded ? "Hide waveform" : "Show waveform")
+                }
+            }
+
+            if expanded, let url = model.audioURL(for: clip, in: night) {
+                waveformPanel
+                    .task(id: url) {
+                        guard peaks == nil else { return }
+                        let loaded = await Task.detached(priority: .utility) {
+                            try? ClipWaveform.read(from: url)
+                        }.value
+                        guard !Task.isCancelled else { return }
+                        peaks = loaded
+                        waveformFailed = loaded == nil
+                    }
+            }
+        }
+        .padding(12)
+        .background(surface, in: RoundedRectangle(cornerRadius: 14))
+        .buttonStyle(.plain)
+        .onChange(of: isPlaying) { wasPlaying, playing in
+            if wasPlaying && !playing { startFraction = 0 }
+        }
+    }
+
+    private var waveformPanel: some View {
+        Group {
+            if let peaks {
+                TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !isPlaying)) { _ in
+                    let progress = model.playbackFraction(for: clip.id) ?? startFraction
+                    VStack(spacing: 6) {
+                        GeometryReader { geometry in
+                            Canvas { context, size in
+                                let step = size.width / CGFloat(peaks.count)
+                                for (index, peak) in peaks.enumerated() {
+                                    let x = (CGFloat(index) + 0.5) * step
+                                    let height = max(2, CGFloat(peak) * (size.height - 4))
+                                    let bar = CGRect(x: x - step * 0.3, y: (size.height - height) / 2,
+                                                     width: step * 0.6, height: height)
+                                    let color = x <= progress * size.width ? playbackColor : accent.opacity(0.45)
+                                    context.fill(Path(roundedRect: bar, cornerRadius: 1), with: .color(color))
+                                }
+                                let x = progress * size.width
+                                let playhead = CGRect(x: min(x, max(0, size.width - 2)), y: 0,
+                                                      width: 2, height: size.height)
+                                context.fill(Path(playhead), with: .color(playbackColor))
+                            }
+                            .contentShape(Rectangle())
+                            .gesture(DragGesture(minimumDistance: 0).onChanged { value in
+                                if geometry.size.width > 0 {
+                                    seek(to: value.location.x / geometry.size.width)
+                                }
+                            })
+                        }
+                        .frame(height: 44)
+                        .accessibilityLabel("Playback position")
+                        .accessibilityValue("\(durationText(progress * clip.duration)) of \(durationText(clip.duration))")
+                        .accessibilityAdjustableAction { direction in
+                            switch direction {
+                            case .increment: seek(to: progress + 0.1)
+                            case .decrement: seek(to: progress - 0.1)
+                            @unknown default: break
+                            }
+                        }
+
+                        HStack {
+                            Text(durationText(progress * clip.duration))
+                            Spacer()
+                            Text(durationText(clip.duration))
+                        }
+                        .font(.caption.monospacedDigit()).foregroundStyle(muted)
+                        .accessibilityHidden(true)
+                    }
+                }
+            } else if waveformFailed {
+                Text("Waveform unavailable").font(.footnote).foregroundStyle(muted)
+            } else {
+                ProgressView("Loading waveform").font(.footnote)
+            }
+        }
+    }
+
+    private func seek(to fraction: Double) {
+        let position = min(1, max(0, fraction))
+        if isPlaying {
+            model.seekPlayback(clip.id, to: position)
+        } else {
+            startFraction = position
+        }
+    }
+}
+
+private enum ClipWaveform {
+    nonisolated static func read(from url: URL) throws -> [Float] {
+        let file = try AVAudioFile(forReading: url, commonFormat: .pcmFormatFloat32, interleaved: false)
+        let frameCount = file.length
+        guard frameCount > 0,
+              let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 4096) else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+
+        // Keep the peak amplitude for each slice of the clip, across all channels.
+        let count = Int(min(72, frameCount))
+        var peaks = Array(repeating: Float.zero, count: count)
+        var offset: AVAudioFramePosition = 0
+        while offset < frameCount {
+            try file.read(into: buffer)
+            guard buffer.frameLength > 0, let channels = buffer.floatChannelData else { break }
+            for frame in 0..<Int(buffer.frameLength) {
+                let index = min(count - 1, Int((offset + AVAudioFramePosition(frame)) * Int64(count) / frameCount))
+                for channel in 0..<Int(buffer.format.channelCount) {
+                    peaks[index] = max(peaks[index], abs(channels[channel][frame]))
+                }
+            }
+            offset += AVAudioFramePosition(buffer.frameLength)
+        }
+        guard offset > 0 else { throw CocoaError(.fileReadCorruptFile) }
+        let maximum = max(0.001, peaks.max() ?? 0)
+        return peaks.map { $0 / maximum }
+    }
+}
+
+func durationText(_ seconds: TimeInterval) -> String {
     let total = max(0, Int(seconds.rounded()))
     if total >= 3600 { return "\(total / 3600)h \((total % 3600) / 60)m" }
     if total >= 60 { return "\(total / 60)m \(total % 60)s" }

@@ -10,9 +10,9 @@ enum NightSound: String, Codable, CaseIterable {
 
     var title: String {
         switch self {
-        case .snoring: "Possible snoring"
-        case .speech: "Possible sleep talking"
-        case .cough: "Possible coughing"
+        case .snoring: "Snoring"
+        case .speech: "Sleep talking"
+        case .cough: "Coughing"
         }
     }
 }
@@ -23,7 +23,7 @@ struct SoundClip: Codable, Identifiable {
     let duration: TimeInterval
     var sounds: [NightSound]?
 
-    // Saved clips from earlier versions were all flagged as possible snoring.
+    // Saved clips from earlier versions were all labeled as snoring.
     var soundTitle: String {
         (sounds ?? [.snoring]).map(\.title).joined(separator: " · ")
     }
