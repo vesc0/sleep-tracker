@@ -15,10 +15,20 @@ struct TrendNight: Identifiable {
         let hours = analyzed.reduce(0) { $0 + $1.duration } / 3_600
         guard hours > 0 else { return nil }
 
-        let count = analyzed.flatMap(\.clips).count { clip in
-            sound.map { (clip.sounds ?? [.snoring]).contains($0) } ?? true
+        let count = analyzed.flatMap(\.activeClips).count { clip in
+            sound.map { clip.labels.contains($0) } ?? true
         }
         return Double(count) / hours
+    }
+
+    var restedRating: Double? {
+        let ratings = sessions.compactMap { $0.checkIn?.restedRating }
+        guard !ratings.isEmpty else { return nil }
+        return Double(ratings.reduce(0, +)) / Double(ratings.count)
+    }
+
+    var tags: Set<NightTag> {
+        Set(sessions.flatMap { $0.checkIn?.tags ?? [] })
     }
 
     static func recent(
@@ -52,6 +62,13 @@ struct TrendsView: View {
     @State private var days = 7
     @State private var sound: NightSound?
     @State private var selectedDay: Int?
+    @State private var comparisonTag = NightTag.lateCaffeine
+    @AppStorage("bedtimeGoalEnabled") private var bedtimeGoalEnabled = false
+    @AppStorage("bedtimeGoalMinutes") private var bedtimeGoalMinutes = 23 * 60
+    @AppStorage("customWakeGoalMinutes") private var customWakeGoalMinutes = -1
+
+    private var suggestedWakeMinutes: Int { (bedtimeGoalMinutes + 8 * 60) % 1440 }
+    private var wakeGoalMinutes: Int { customWakeGoalMinutes < 0 ? suggestedWakeMinutes : customWakeGoalMinutes }
 
     private var localCalendar: Calendar {
         var local = calendar
@@ -60,40 +77,46 @@ struct TrendsView: View {
     }
 
     var body: some View {
-        TimelineView(.everyMinute) { context in
-            let nights = TrendNight.recent(sessions, days: days, now: context.date, calendar: localCalendar)
-            let tracked = nights.filter { !$0.sessions.isEmpty }
+        NavigationStack {
+            TimelineView(.everyMinute) { context in
+                let nights = TrendNight.recent(sessions, days: days, now: context.date, calendar: localCalendar)
+                let tracked = nights.filter { !$0.sessions.isEmpty }
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    Text("Trends").font(.largeTitle.bold()).accessibilityAddTraits(.isHeader)
-                    Picker("Date range", selection: $days) {
-                        Text("7 Days").tag(7)
-                        Text("30 Days").tag(30)
-                    }
-                    .pickerStyle(.segmented)
-
-                    if tracked.isEmpty {
-                        ContentUnavailableView(
-                            "No tracked nights", systemImage: "chart.bar",
-                            description: Text("Record a session to see trends here.")
-                        )
-                    } else {
-                        durationCard(nights, tracked: tracked)
-                        soundsCard(nights)
-                        if let selectedDay, nights.indices.contains(selectedDay) {
-                            sessionLinks(for: nights[selectedDay])
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 20) {
+                        Picker("Date range", selection: $days) {
+                            Text("7 Days").tag(7)
+                            Text("30 Days").tag(30)
                         }
+                        .pickerStyle(.segmented)
+
+                        if tracked.isEmpty {
+                            ContentUnavailableView(
+                                "No tracked nights", systemImage: "chart.bar",
+                                description: Text("Record a session to see trends here.")
+                            )
+                        } else {
+                            durationCard(nights, tracked: tracked)
+                            soundsCard(nights)
+                            if let selectedDay, nights.indices.contains(selectedDay) {
+                                sessionLinks(for: nights[selectedDay])
+                            }
+                            restedCard(nights)
+                        }
+                        timingCard(nights)
+                        if !tracked.isEmpty { comparisonCard(tracked) }
                     }
+                    .frame(maxWidth: 460, alignment: .leading)
+                    .padding(24)
+                    .frame(maxWidth: .infinity, alignment: .top)
                 }
-                .frame(maxWidth: 460, alignment: .leading)
-                .padding(24)
-                .frame(maxWidth: .infinity, alignment: .top)
+                .onChange(of: nights.first?.date) { _, _ in selectedDay = nil }
             }
-            .onChange(of: nights.first?.date) { _, _ in selectedDay = nil }
+            .background(nightBackground.ignoresSafeArea())
+            .navigationTitle("Trends")
+            .navigationBarTitleDisplayMode(.large)
         }
         .onChange(of: days) { _, _ in selectedDay = nil }
-        .background(nightBackground.ignoresSafeArea())
         .toolbarBackground(nightBackground, for: .tabBar)
         .toolbarBackground(.visible, for: .tabBar)
     }
@@ -101,9 +124,8 @@ struct TrendsView: View {
     private func durationCard(_ nights: [TrendNight], tracked: [TrendNight]) -> some View {
         let average = tracked.reduce(0) { $0 + $1.duration } / Double(tracked.count)
 
-        return VStack(alignment: .leading, spacing: 10) {
-            Text("Sleep duration").font(.headline).accessibilityAddTraits(.isHeader)
-            Text(durationText(average)).font(.title.bold().monospacedDigit())
+        return trendCard("Sleep duration", help: "Duration uses the recorded session length. The dashed line shows the average across tracked nights. Under 6 hours is red, 6 to under 7 is yellow, and 7 or more is green.") {
+            SleepDurationValue(seconds: average).font(.title)
             Text("Average from recorded sessions · \(tracked.count) of \(days) nights")
                 .font(.subheadline).foregroundStyle(muted)
 
@@ -111,7 +133,8 @@ struct TrendsView: View {
                 ForEach(nights.indices, id: \.self) { index in
                     if nights[index].duration > 0 {
                         nightBar(at: index, value: nights[index].duration / 3_600, axis: "Sleep duration in hours")
-                            .foregroundStyle(selectedDay == index ? Color.white : accent)
+                            .foregroundStyle(SleepDurationValue.color(for: nights[index].duration)
+                                .opacity(selectedDay == nil || selectedDay == index ? 1 : 0.45))
                             .accessibilityLabel(nights[index].date.formatted(date: .abbreviated, time: .omitted))
                             .accessibilityValue(durationText(nights[index].duration))
                     }
@@ -126,15 +149,12 @@ struct TrendsView: View {
             .modifier(NightChartAxis(nights: nights))
             .chartXSelection(value: daySelection)
         }
-        .padding(16)
-        .background(surface, in: RoundedRectangle(cornerRadius: 18))
     }
 
     private func soundsCard(_ nights: [TrendNight]) -> some View {
         let rates = nights.map { $0.soundRate(for: sound) }
 
-        return VStack(alignment: .leading, spacing: 10) {
-            Text("Nighttime sounds").font(.headline).accessibilityAddTraits(.isHeader)
+        return trendCard("Nighttime sounds", help: "Only analyzed sessions count. Dismissed clips are excluded. Green means zero clips per hour. Yellow means above zero and up to 0.625 clips per hour. Red means more than 0.625. The cutoff is five clips in eight hours.") {
             Picker("Sound type", selection: $sound) {
                 Text("All sounds").tag(nil as NightSound?)
                 ForEach(NightSound.allCases, id: \.self) { sound in
@@ -153,14 +173,16 @@ struct TrendsView: View {
                 Chart {
                     ForEach(nights.indices, id: \.self) { index in
                         if let rate = rates[index] {
+                            let color = soundRateColor(rate)
+                                .opacity(selectedDay == nil || selectedDay == index ? 1 : 0.45)
                             if rate > 0 {
                                 nightBar(at: index, value: rate, axis: "Clips per hour")
-                                    .foregroundStyle(selectedDay == index ? Color.white : accent)
+                                    .foregroundStyle(color)
                                     .accessibilityLabel(nights[index].date.formatted(date: .abbreviated, time: .omitted))
                                     .accessibilityValue(rate.formatted(.number.precision(.fractionLength(0...1))))
                             } else {
                                 PointMark(x: .value("Night", Double(index)), y: .value("Clips per hour", 0.0))
-                                    .foregroundStyle(selectedDay == index ? Color.white : accent)
+                                    .foregroundStyle(color)
                                     .accessibilityLabel(nights[index].date.formatted(date: .abbreviated, time: .omitted))
                                     .accessibilityValue("0 clips per hour")
                             }
@@ -172,8 +194,225 @@ struct TrendsView: View {
                 .chartXSelection(value: daySelection)
             }
         }
+    }
+
+    private func restedCard(_ nights: [TrendNight]) -> some View {
+        let ratings = nights.compactMap(\.restedRating)
+        return trendCard("Rested rating", help: "Ratings come from your session’s Sleep rating. Only rated nights count toward the average. Ratings of 1–2 are red, 3 is yellow, and 4–5 are green. Averages are rounded for color.") {
+            if ratings.isEmpty {
+                Text("Add a sleep rating to chart how rested you feel.")
+                    .font(.subheadline).foregroundStyle(muted)
+            } else {
+                let average = ratings.reduce(0, +) / Double(ratings.count)
+                HStack(spacing: 4) {
+                    RestedScore(value: average, showDecimal: true)
+                    Text("average · \(ratings.count) rated nights").foregroundStyle(muted)
+                }
+                .font(.subheadline)
+                .accessibilityElement(children: .combine)
+                Chart {
+                    ForEach(nights.indices, id: \.self) { index in
+                        if let rating = nights[index].restedRating {
+                            LineMark(x: .value("Night", Double(index)), y: .value("Rested rating", rating))
+                                .foregroundStyle(accent.opacity(0.6))
+                                .accessibilityHidden(true)
+                        }
+                    }
+                    ForEach(nights.indices, id: \.self) { index in
+                        if let rating = nights[index].restedRating {
+                            PointMark(x: .value("Night", Double(index)), y: .value("Rested rating", rating))
+                                .foregroundStyle(RestedScore.color(for: rating))
+                                .accessibilityLabel(nights[index].date.formatted(date: .abbreviated, time: .omitted))
+                        }
+                    }
+                }
+                .chartYScale(domain: 0.5...5.5)
+                .chartYAxis { AxisMarks(values: [1, 2, 3, 4, 5]) }
+                .modifier(NightChartAxis(nights: nights))
+            }
+        }
+    }
+
+    private func timingCard(_ nights: [TrendNight]) -> some View {
+        let sessions = nights.flatMap(\.sessions)
+        let starts = sessions.map { timingHour($0.startedAt, relativeTo: $0.startedAt) }
+        let ends = sessions.map { timingHour($0.endedAt, relativeTo: $0.startedAt) }
+        let goal = Double(bedtimeGoalMinutes) / 60 + (bedtimeGoalMinutes < 12 * 60 ? 24 : 0)
+        let wakeOffset = (wakeGoalMinutes - bedtimeGoalMinutes + 1440) % 1440
+        let wakeGoalHour = goal + Double(wakeOffset == 0 ? 1440 : wakeOffset) / 60
+        let bounds = starts + ends + (bedtimeGoalEnabled ? [goal, wakeGoalHour] : [])
+        let lower = floor((bounds.min() ?? 20) / 2) * 2 - 0.5
+        let upper = ceil((bounds.max() ?? 32) / 2) * 2 + 0.5
+
+        return trendCard("Bedtime consistency", help: "Circles show when recording started and diamonds show when it ended. Dashed lines show your goals when enabled. Changing bedtime sets the wake-up goal to eight hours later.") {
+            Toggle("Bedtime goal", isOn: $bedtimeGoalEnabled)
+            if bedtimeGoalEnabled {
+                DatePicker("Bedtime", selection: bedtimeGoal, displayedComponents: .hourAndMinute)
+                DatePicker("Wake-up goal", selection: wakeGoal, displayedComponents: .hourAndMinute)
+            }
+            if sessions.isEmpty {
+                Text("Record a session to see start and end times.")
+                    .font(.subheadline).foregroundStyle(muted)
+            } else {
+                HStack {
+                    Label("Session start", systemImage: "circle.fill").foregroundStyle(accent)
+                    Label("Session end", systemImage: "diamond.fill").foregroundStyle(.mint)
+                }
+                .font(.caption)
+                Chart {
+                    ForEach(nights.indices, id: \.self) { index in
+                        ForEach(nights[index].sessions) { session in
+                            PointMark(x: .value("Night", Double(index)),
+                                      y: .value("Session start", timingHour(session.startedAt, relativeTo: session.startedAt)))
+                                .foregroundStyle(accent)
+                                .accessibilityValue(session.startedAt.formatted(date: .omitted, time: .shortened))
+                            PointMark(x: .value("Night", Double(index)),
+                                      y: .value("Session end", timingHour(session.endedAt, relativeTo: session.startedAt)))
+                                .symbol(.diamond)
+                                .foregroundStyle(Color.mint)
+                                .accessibilityValue(session.endedAt.formatted(date: .omitted, time: .shortened))
+                        }
+                    }
+                    if bedtimeGoalEnabled {
+                        RuleMark(y: .value("Bedtime goal", goal))
+                            .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                            .foregroundStyle(accent.opacity(0.7))
+                        RuleMark(y: .value("Wake-up goal", wakeGoalHour))
+                            .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                            .foregroundStyle(Color.mint.opacity(0.7))
+                    }
+                }
+                .chartYScale(domain: lower...upper)
+                .chartYAxis {
+                    AxisMarks(values: .automatic(desiredCount: 4)) { value in
+                        AxisGridLine()
+                        if let hour = value.as(Double.self), let time = clockTime(minutes: Int((hour * 60).rounded()) % 1440) {
+                            AxisValueLabel { Text(time, format: .dateTime.hour().minute()) }
+                        }
+                    }
+                }
+                .modifier(NightChartAxis(nights: nights))
+            }
+        }
+    }
+
+    private var bedtimeGoal: Binding<Date> {
+        Binding(
+            get: { clockTime(minutes: bedtimeGoalMinutes) ?? .now },
+            set: {
+                let parts = localCalendar.dateComponents([.hour, .minute], from: $0)
+                let minutes = (parts.hour ?? 23) * 60 + (parts.minute ?? 0)
+                if minutes != bedtimeGoalMinutes {
+                    bedtimeGoalMinutes = minutes
+                    customWakeGoalMinutes = -1
+                }
+            }
+        )
+    }
+
+    private var wakeGoal: Binding<Date> {
+        Binding(
+            get: { clockTime(minutes: wakeGoalMinutes) ?? .now },
+            set: {
+                let parts = localCalendar.dateComponents([.hour, .minute], from: $0)
+                customWakeGoalMinutes = (parts.hour ?? 7) * 60 + (parts.minute ?? 0)
+            }
+        )
+    }
+
+    private func clockTime(minutes: Int) -> Date? {
+        // A fixed winter date keeps clock labels independent of today's DST transition.
+        guard let reference = localCalendar.date(from: DateComponents(year: 2026, month: 1, day: 15)) else { return nil }
+        return localCalendar.date(bySettingHour: minutes / 60, minute: minutes % 60, second: 0, of: reference)
+    }
+
+    private func timingHour(_ time: Date, relativeTo start: Date) -> Double {
+        let calendar = localCalendar
+        let dayOffset = calendar.dateComponents([.day], from: calendar.startOfDay(for: start),
+                                                to: calendar.startOfDay(for: time)).day ?? 0
+        let parts = calendar.dateComponents([.hour, .minute], from: time)
+        let shift = calendar.component(.hour, from: start) < 12 ? 24 : 0
+        return Double(dayOffset * 24 + shift + (parts.hour ?? 0)) + Double(parts.minute ?? 0) / 60
+    }
+
+    private func comparisonCard(_ nights: [TrendNight]) -> some View {
+        let checkedIn = nights.filter { $0.sessions.contains { $0.checkIn != nil } }
+        let tagged = checkedIn.filter { $0.tags.contains(comparisonTag) }
+        let other = checkedIn.filter { !$0.tags.contains(comparisonTag) }
+
+        return trendCard("Compare tags", help: "Compare nights with and without the selected tag. Duration uses recorded sessions, rested averages use ratings you entered, and sound rates use analyzed sessions. Sound colors use the same scale as Nighttime sounds.") {
+            Picker("Tag", selection: $comparisonTag) {
+                ForEach(NightTag.allCases) { tag in Text(tag.rawValue).tag(tag) }
+            }
+            .pickerStyle(.menu)
+            Text("Includes nights with a rating, notes, or tags.")
+                .font(.subheadline).foregroundStyle(muted)
+            comparisonRow("With tag", nights: tagged)
+            comparisonRow("Without tag", nights: other)
+        }
+    }
+
+    private func comparisonRow(_ label: String, nights: [TrendNight]) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("\(label) · \(nights.count) nights").font(.subheadline.weight(.semibold))
+            if !nights.isEmpty {
+                let average = nights.reduce(0) { $0 + $1.duration } / Double(nights.count)
+                let ratings = nights.compactMap(\.restedRating)
+                HStack(spacing: 4) {
+                    SleepDurationValue(seconds: average)
+                    Text("average duration").foregroundStyle(muted)
+                }
+                .font(.subheadline)
+                .accessibilityElement(children: .combine)
+                let soundRates = nights.compactMap { $0.soundRate(for: nil) }
+                if !soundRates.isEmpty {
+                    let averageRate = soundRates.reduce(0, +) / Double(soundRates.count)
+                    HStack(spacing: 4) {
+                        Text(averageRate, format: .number.precision(.fractionLength(2)))
+                            .bold()
+                            .monospacedDigit()
+                            .foregroundStyle(soundRateColor(averageRate))
+                        Text("sound clips/hr · \(soundRates.count) analyzed").foregroundStyle(muted)
+                    }
+                    .font(.subheadline)
+                    .accessibilityElement(children: .combine)
+                }
+                if !ratings.isEmpty {
+                    let rested = ratings.reduce(0, +) / Double(ratings.count)
+                    HStack(spacing: 4) {
+                        RestedScore(value: rested, showDecimal: true)
+                        Text("rested · \(ratings.count) rated").foregroundStyle(muted)
+                    }
+                    .font(.subheadline)
+                    .accessibilityElement(children: .combine)
+                }
+            }
+        }
+    }
+
+    private func trendCard<Content: View>(
+        _ title: String, help: String, @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text(title).font(.headline).accessibilityAddTraits(.isHeader)
+                Spacer()
+                TrendInfoButton(title: title, help: help)
+            }
+            content()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
         .background(surface, in: RoundedRectangle(cornerRadius: 18))
+    }
+
+    private func soundRateColor(_ rate: Double) -> Color {
+        // Normalize the five-clip cutoff to an eight-hour session.
+        switch rate {
+        case 0: .green
+        case ...0.625: .yellow
+        default: .red
+        }
     }
 
     private func nightBar(at index: Int, value: Double, axis: String) -> RectangleMark {
@@ -208,6 +447,72 @@ struct TrendsView: View {
                 }
                 .buttonStyle(.plain)
             }
+        }
+    }
+}
+
+struct SleepDurationValue: View {
+    let seconds: TimeInterval
+
+    var body: some View {
+        Text(durationText(seconds))
+            .bold()
+            .monospacedDigit()
+            .foregroundStyle(Self.color(for: seconds))
+    }
+
+    static func color(for seconds: TimeInterval) -> Color {
+        switch seconds / 3_600 {
+        case ..<6: return .red
+        case ..<7: return .yellow
+        default: return .green
+        }
+    }
+}
+
+struct RestedScore: View {
+    let value: Double
+    var showDecimal = false
+
+    var body: some View {
+        let score = value.formatted(.number.precision(.fractionLength(showDecimal ? 1 : 0)))
+        Text("\(score)/5")
+            .bold()
+            .monospacedDigit()
+            .foregroundStyle(Self.color(for: value))
+            .accessibilityLabel("\(score) out of 5")
+    }
+
+    static func color(for value: Double) -> Color {
+        switch value.rounded() {
+        case ...2: return .red
+        case 3: return .yellow
+        default: return .green
+        }
+    }
+}
+
+private struct TrendInfoButton: View {
+    let title: String
+    let help: String
+    @State private var showingHelp = false
+
+    var body: some View {
+        Button {
+            showingHelp = true
+        } label: {
+            Image(systemName: "info.circle")
+                .font(.subheadline)
+                .foregroundStyle(muted)
+                .frame(minWidth: 44, minHeight: 44, alignment: .trailing)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("About \(title)")
+        .alert(title, isPresented: $showingHelp) {
+            Button("Done", role: .cancel) {}
+        } message: {
+            Text(help)
         }
     }
 }

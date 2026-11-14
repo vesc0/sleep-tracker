@@ -158,42 +158,45 @@ struct SleepTrackerView: View {
     }
 
     private var history: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                Text("History").font(.largeTitle.bold()).accessibilityAddTraits(.isHeader)
-                #if DEBUG
-                if model.sampleNights.isEmpty {
-                    Button("Add 60 Days of Sample Data", systemImage: "plus.circle") {
-                        model.addSampleData()
-                    }
-                    .buttonStyle(.bordered)
-                } else {
-                    Button("Clear Sample Data", systemImage: "trash") {
-                        model.clearSampleData()
-                    }
-                    .buttonStyle(.bordered)
-                }
-                #endif
-                if model.historyNights.isEmpty {
-                    ContentUnavailableView(
-                        "No sessions yet", systemImage: "moon.zzz",
-                        description: Text("Your sessions and saved clips will appear here.")
-                    )
-                    .padding(.vertical, 64)
-                } else {
-                    ForEach(model.historyNights) { night in
-                        Button { selectedNight = night } label: {
-                            NightRow(night: night, title: night.startedAt.formatted(.dateTime.weekday(.wide).month(.abbreviated).day()))
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    #if DEBUG
+                    if model.sampleNights.isEmpty {
+                        Button("Add 60 Days of Sample Data", systemImage: "plus.circle") {
+                            model.addSampleData()
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(.bordered)
+                    } else {
+                        Button("Clear Sample Data", systemImage: "trash") {
+                            model.clearSampleData()
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                    #endif
+                    if model.historyNights.isEmpty {
+                        ContentUnavailableView(
+                            "No sessions yet", systemImage: "moon.zzz",
+                            description: Text("Your sessions and saved clips will appear here.")
+                        )
+                        .padding(.vertical, 64)
+                    } else {
+                        ForEach(model.historyNights) { night in
+                            Button { selectedNight = night } label: {
+                                NightRow(night: night, title: night.startedAt.formatted(.dateTime.weekday(.wide).month(.abbreviated).day()))
+                            }
+                            .buttonStyle(.plain)
+                        }
                     }
                 }
+                .frame(maxWidth: 460, alignment: .leading)
+                .padding(24)
+                .frame(maxWidth: .infinity, alignment: .top)
             }
-            .frame(maxWidth: 460, alignment: .leading)
-            .padding(24)
-            .frame(maxWidth: .infinity, alignment: .top)
+            .background(nightBackground.ignoresSafeArea())
+            .navigationTitle("History")
+            .navigationBarTitleDisplayMode(.large)
         }
-        .background(nightBackground.ignoresSafeArea())
         .toolbarBackground(nightBackground, for: .tabBar)
         .toolbarBackground(.visible, for: .tabBar)
     }
@@ -241,9 +244,13 @@ struct NightRow: View {
                 if model.isSampleNight(night.id) {
                     Text("Sample session").font(.caption).foregroundStyle(muted)
                 }
-                Text("\(durationText(night.duration)) · \(night.clips.count) \(night.clips.count == 1 ? "clip" : "clips")")
-                    .font(.subheadline)
-                    .foregroundStyle(muted)
+                HStack(spacing: 4) {
+                    SleepDurationValue(seconds: night.duration)
+                    Text("·").foregroundStyle(muted)
+                    SoundCountValue(night: night, showUnit: true)
+                }
+                .font(.subheadline)
+                .accessibilityElement(children: .combine)
             }
             Spacer()
             Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(muted)
@@ -254,11 +261,36 @@ struct NightRow: View {
     }
 }
 
+private struct SoundCountValue: View {
+    let night: Night
+    var showUnit = false
+
+    var body: some View {
+        let count = night.activeClips.count
+        let unit = count == 1 ? "clip" : "clips"
+        Text(showUnit ? "\(count) \(unit)" : String(count))
+            .bold()
+            .monospacedDigit()
+            .foregroundStyle(night.needsAnalysis ? muted : color(for: count))
+            .accessibilityLabel(night.needsAnalysis ? "\(count) \(unit) so far, analysis pending" : "\(count) \(unit)")
+    }
+
+    private func color(for count: Int) -> Color {
+        switch count {
+        case 0: .green
+        case 1...5: .yellow
+        default: .red
+        }
+    }
+}
+
 private struct NightDetail: View {
     let originalNight: Night
     @EnvironmentObject private var model: SessionModel
     @Environment(\.dismiss) private var dismiss
     @State private var confirmDelete = false
+    @State private var editingCheckIn = false
+    @State private var showDismissed = false
 
     private var night: Night {
         model.historyNights.first(where: { $0.id == originalNight.id }) ?? originalNight
@@ -279,11 +311,16 @@ private struct NightDetail: View {
                     }
 
                     HStack(alignment: .top, spacing: 10) {
-                        metric(durationText(night.duration), label: "Sleep duration")
-                        metric(String(night.clips.count), label: "Saved clips")
+                        metric(label: "Sleep duration") {
+                            SleepDurationValue(seconds: night.duration)
+                        }
+                        metric(label: "Saved clips") {
+                            SoundCountValue(night: night)
+                        }
                     }
                     Text("Estimated from session length")
                         .font(.footnote).foregroundStyle(muted)
+                    checkInCard
                     if night.wasInterrupted {
                         Label("Listening ended early. This session may be incomplete.", systemImage: "exclamationmark.circle")
                             .foregroundStyle(muted)
@@ -308,14 +345,30 @@ private struct NightDetail: View {
                     }
 
                     Text("Detected sounds").font(.title3.bold()).accessibilityAddTraits(.isHeader)
-                    if night.clips.isEmpty, !night.needsAnalysis {
+                    if night.activeClips.isEmpty, !night.needsAnalysis {
                         Text("No nighttime sounds were flagged.")
                             .foregroundStyle(muted)
                     }
-                    ForEach(night.clips) { clip in
+                    ForEach(night.activeClips) { clip in
                         ClipRow(clip: clip, night: night)
                     }
-                    if !model.isSampleNight(night.id), model.startedAt != nil, !night.clips.isEmpty {
+                    if night.activeClips.count < night.clips.count {
+                        DisclosureGroup("Dismissed clips (\(night.clips.count - night.activeClips.count))", isExpanded: $showDismissed) {
+                            ForEach(night.clips.filter { $0.isDismissed == true }) { clip in
+                                HStack {
+                                    Text(clip.soundTitle)
+                                    Text(clip.startedAt, style: .time).foregroundStyle(muted)
+                                    Spacer()
+                                    Button("Restore") {
+                                        model.editClip(clip.id, in: night.id) { $0.isDismissed = nil }
+                                    }
+                                    .disabled(model.analyzingID == night.id)
+                                }
+                                .padding(.vertical, 6)
+                            }
+                        }
+                    }
+                    if !model.isSampleNight(night.id), model.startedAt != nil, !night.activeClips.isEmpty {
                         Text("Clips are available to play after the current session ends.")
                             .font(.footnote)
                             .foregroundStyle(muted)
@@ -340,6 +393,11 @@ private struct NightDetail: View {
                     .tint(accent)
                 }
             }
+            .sheet(isPresented: $editingCheckIn) {
+                NightCheckInEditor(initial: night.checkIn ?? NightCheckIn()) { checkIn in
+                    model.editNight(night.id) { $0.checkIn = checkIn }
+                }
+            }
             .confirmationDialog("Delete this session and its clips?", isPresented: $confirmDelete, titleVisibility: .visible) {
                 Button("Delete session", role: .destructive) {
                     model.delete(night)
@@ -349,13 +407,43 @@ private struct NightDetail: View {
         }
     }
 
+    private var checkInCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Sleep rating").font(.headline)
+                Spacer()
+                Button(night.checkIn == nil ? "Add" : "Edit") { editingCheckIn = true }
+                    .disabled(model.analyzingID == night.id)
+            }
+            if let checkIn = night.checkIn {
+                if let rating = checkIn.restedRating {
+                    HStack(spacing: 4) {
+                        Text("Rested")
+                        RestedScore(value: Double(rating))
+                    }
+                    .font(.subheadline)
+                    .accessibilityElement(children: .combine)
+                }
+                if !checkIn.tags.isEmpty {
+                    Text(NightTag.allCases.filter { checkIn.tags.contains($0) }.map(\.rawValue).joined(separator: " · "))
+                        .font(.subheadline).foregroundStyle(muted)
+                }
+                if !checkIn.notes.isEmpty {
+                    Text(checkIn.notes).font(.subheadline)
+                }
+            }
+        }
+        .padding(14)
+        .background(surface, in: RoundedRectangle(cornerRadius: 16))
+    }
+
     private var timeline: some View {
         let playingID = model.playingID
         return VStack(spacing: 10) {
             Canvas { context, size in
                 let track = CGRect(x: 0, y: size.height / 2 - 2, width: size.width, height: 4)
                 context.fill(Path(roundedRect: track, cornerRadius: 2), with: .color(accent.opacity(0.20)))
-                for clip in night.clips {
+                for clip in night.activeClips {
                     let position = clip.startedAt.timeIntervalSince(night.startedAt) / night.duration
                     // Keep short clips visible on a full-night timeline.
                     let width = max(2, clip.duration / night.duration * size.width)
@@ -377,15 +465,72 @@ private struct NightDetail: View {
         .accessibilityHidden(true)
     }
 
-    private func metric(_ value: String, label: String) -> some View {
+    private func metric<Value: View>(label: String, @ViewBuilder value: () -> Value) -> some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text(value).font(.title2.weight(.semibold).monospacedDigit())
+            value().font(.title2.weight(.semibold).monospacedDigit())
             Text(label).font(.subheadline).foregroundStyle(muted)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
         .background(surface, in: RoundedRectangle(cornerRadius: 16))
         .accessibilityElement(children: .combine)
+    }
+}
+
+private struct NightCheckInEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var draft: NightCheckIn
+    let save: (NightCheckIn?) -> Bool
+
+    init(initial: NightCheckIn, save: @escaping (NightCheckIn?) -> Bool) {
+        _draft = State(initialValue: initial)
+        self.save = save
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("How rested do you feel?") {
+                    Picker("Rested rating", selection: $draft.restedRating) {
+                        Text("Skip").tag(nil as Int?)
+                        ForEach(1...5, id: \.self) { rating in
+                            Text(String(rating)).tag(Optional(rating))
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    Text("1 · Not rested     5 · Very rested").font(.footnote)
+                }
+                Section("Notes") {
+                    TextField("Add a note", text: $draft.notes, axis: .vertical)
+                        .lineLimit(3...6)
+                }
+                Section("Tags") {
+                    ForEach(NightTag.allCases) { tag in
+                        Toggle(tag.rawValue, isOn: Binding(
+                            get: { draft.tags.contains(tag) },
+                            set: { selected in
+                                if selected { draft.tags.insert(tag) }
+                                else { draft.tags.remove(tag) }
+                            }
+                        ))
+                    }
+                }
+            }
+            .navigationTitle("Sleep rating")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        draft.notes = draft.notes.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let empty = draft.restedRating == nil && draft.notes.isEmpty && draft.tags.isEmpty
+                        if save(empty ? nil : draft) { dismiss() }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -396,6 +541,7 @@ private struct ClipRow: View {
     let night: Night
     @EnvironmentObject private var model: SessionModel
     @State private var expanded = false
+    @State private var editingLabels = false
     @State private var startFraction = 0.0
     @State private var peaks: [Float]?
     @State private var waveformFailed = false
@@ -424,12 +570,24 @@ private struct ClipRow: View {
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text(clip.soundTitle).font(.headline)
-                    Text(clip.startedAt, style: .time)
+                    Text("\(clip.startedAt.formatted(date: .omitted, time: .shortened)) · \(durationText(clip.duration))")
                         .font(.subheadline.monospacedDigit())
                         .foregroundStyle(muted)
                 }
                 Spacer(minLength: 4)
-                Text(durationText(clip.duration)).font(.subheadline).foregroundStyle(muted)
+                Menu {
+                    Button("Edit labels", systemImage: "tag") {
+                        editingLabels = true
+                    }
+                    Button("Dismiss detection", systemImage: "eye.slash") {
+                        model.editClip(clip.id, in: night.id) { $0.isDismissed = true }
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle").frame(minWidth: 44, minHeight: 44)
+                }
+                .accessibilityLabel("Clip options")
+                .disabled(model.analyzingID == night.id)
+
                 if !isSample {
                     Button {
                         expanded.toggle()
@@ -459,6 +617,12 @@ private struct ClipRow: View {
         .padding(12)
         .background(surface, in: RoundedRectangle(cornerRadius: 14))
         .buttonStyle(.plain)
+        .sheet(isPresented: $editingLabels) {
+            ClipLabelEditor(labels: clip.labels) { labels in
+                model.editClip(clip.id, in: night.id) { $0.sounds = labels }
+            }
+            .presentationDetents([.medium, .large])
+        }
         .onChange(of: isPlaying) { wasPlaying, playing in
             if wasPlaying && !playing { startFraction = 0 }
         }
@@ -527,6 +691,52 @@ private struct ClipRow: View {
             model.seekPlayback(clip.id, to: position)
         } else {
             startFraction = position
+        }
+    }
+}
+
+private struct ClipLabelEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var selected: Set<NightSound>
+    let save: ([NightSound]) -> Bool
+
+    init(labels: [NightSound], save: @escaping ([NightSound]) -> Bool) {
+        _selected = State(initialValue: Set(labels))
+        self.save = save
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    ForEach(NightSound.allCases, id: \.self) { sound in
+                        Toggle(sound.title, isOn: Binding(
+                            get: { selected.contains(sound) },
+                            set: { enabled in
+                                if enabled { selected.insert(sound) }
+                                else { selected.remove(sound) }
+                            }
+                        ))
+                    }
+                } footer: {
+                    if selected.isEmpty {
+                        Text("Select at least one label.")
+                    }
+                }
+            }
+            .navigationTitle("Edit labels")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        if save(NightSound.allCases.filter { selected.contains($0) }) { dismiss() }
+                    }
+                    .disabled(selected.isEmpty)
+                }
+            }
         }
     }
 }

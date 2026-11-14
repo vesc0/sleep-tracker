@@ -60,7 +60,9 @@ final class SessionModel: NSObject, ObservableObject, AVAudioPlayerDelegate {
                 return SoundClip(id: UUID(), startedAt: start.addingTimeInterval(position),
                                  duration: 8, sounds: sounds)
             }
-            return Night(id: UUID(), startedAt: start, endedAt: end, isComplete: true, clips: clips)
+            let tags: Set<NightTag> = offset.isMultiple(of: 3) ? [.lateCaffeine, .backSleeping] : [.sideSleeping]
+            let checkIn = NightCheckIn(restedRating: offset.isMultiple(of: 4) ? nil : 1 + offset % 5, tags: tags)
+            return Night(id: UUID(), startedAt: start, endedAt: end, isComplete: true, clips: clips, checkIn: checkIn)
         }
     }
 
@@ -181,6 +183,41 @@ final class SessionModel: NSObject, ObservableObject, AVAudioPlayerDelegate {
         analyzingID = nil
         analysisTask = nil
         analysisProblems[id] = problem
+    }
+
+    @discardableResult
+    func editNight(_ id: UUID, _ edit: (inout Night) -> Void) -> Bool {
+        guard analyzingID != id else { return false }
+        #if DEBUG
+        if let index = sampleNights.firstIndex(where: { $0.id == id }) {
+            edit(&sampleNights[index])
+            return true
+        }
+        #endif
+        guard let archive, let index = nights.firstIndex(where: { $0.id == id }) else { return false }
+        var updated = nights[index]
+        edit(&updated)
+        do {
+            try archive.save(updated)
+            nights[index] = updated
+            return true
+        } catch {
+            problem = error.localizedDescription
+            return false
+        }
+    }
+
+    @discardableResult
+    func editClip(_ clipID: UUID, in nightID: UUID, _ edit: (inout SoundClip) -> Void) -> Bool {
+        let saved = editNight(nightID) { night in
+            guard let index = night.clips.firstIndex(where: { $0.id == clipID }) else { return }
+            edit(&night.clips[index])
+        }
+        if playingID == clipID,
+           nights.first(where: { $0.id == nightID })?.activeClips.contains(where: { $0.id == clipID }) == false {
+            stopPlayback()
+        }
+        return saved
     }
 
     func delete(_ night: Night) {

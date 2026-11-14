@@ -22,11 +22,30 @@ struct SoundClip: Codable, Identifiable {
     let startedAt: Date
     let duration: TimeInterval
     var sounds: [NightSound]?
+    var isDismissed: Bool?
+
+    var labels: [NightSound] { sounds ?? [.snoring] }
 
     // Saved clips from earlier versions were all labeled as snoring.
     var soundTitle: String {
-        (sounds ?? [.snoring]).map(\.title).joined(separator: " · ")
+        labels.map(\.title).joined(separator: " · ")
     }
+}
+
+enum NightTag: String, Codable, CaseIterable, Identifiable {
+    case lateCaffeine = "Late caffeine"
+    case congestion = "Congestion"
+    case sideSleeping = "Side sleeping"
+    case backSleeping = "Back sleeping"
+    case stomachSleeping = "Stomach sleeping"
+
+    var id: Self { self }
+}
+
+struct NightCheckIn: Codable {
+    var restedRating: Int?
+    var notes = ""
+    var tags: Set<NightTag> = []
 }
 
 struct Night: Codable, Identifiable {
@@ -38,6 +57,10 @@ struct Night: Codable, Identifiable {
     var clips: [SoundClip] = []
     // Older session files omit this field.
     var pendingClips: [SoundClip]?
+
+    var checkIn: NightCheckIn?
+
+    var activeClips: [SoundClip] { clips.filter { $0.isDismissed != true } }
 
     var needsAnalysis: Bool { !(pendingClips ?? []).isEmpty }
 
