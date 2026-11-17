@@ -11,6 +11,7 @@ final class SessionModel: NSObject, ObservableObject, AVAudioPlayerDelegate {
     @Published private(set) var isBusy = false
     @Published private(set) var playingID: UUID?
     @Published private(set) var analyzingID: UUID?
+    @Published private(set) var analysisProgress: Double = 0
     @Published private(set) var analysisProblems: [UUID: String] = [:]
     @Published var problem: String?
     @Published var showMicrophoneSettings = false
@@ -150,13 +151,16 @@ final class SessionModel: NSObject, ObservableObject, AVAudioPlayerDelegate {
         guard analyzingID == nil, capture == nil, !isBusy,
               let archive, let night = nights.first(where: { $0.id == id }), night.needsAnalysis else { return }
         analysisProblems[id] = nil
+        analysisProgress = night.analysisProgress
         analyzingID = id
         // Prevent auto-lock while Sound Analysis runs.
         UIApplication.shared.isIdleTimerDisabled = true
         analysisTask = Task.detached(priority: .utility) { [weak self] in
             var problem: String?
             do {
-                try await NightAnalysis.run(night, archive: archive) { [weak self] updated in
+                try await NightAnalysis.run(night, archive: archive, didProgress: { [weak self] progress in
+                    await self?.updateAnalysisProgress(progress)
+                }) { [weak self] updated in
                     await self?.updateNight(updated)
                 }
             } catch {
@@ -176,6 +180,10 @@ final class SessionModel: NSObject, ObservableObject, AVAudioPlayerDelegate {
         if let index = nights.firstIndex(where: { $0.id == night.id }) {
             nights[index] = night
         }
+    }
+
+    private func updateAnalysisProgress(_ progress: Double) {
+        analysisProgress = progress
     }
 
     private func endAnalysis(id: UUID, problem: String?) {

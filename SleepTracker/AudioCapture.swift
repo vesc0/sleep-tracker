@@ -247,6 +247,7 @@ final class AudioCapture: @unchecked Sendable {
 enum NightAnalysis {
     static func run(
         _ original: Night, archive: NightArchive,
+        didProgress: @Sendable (Double) async -> Void,
         didSave: @Sendable (Night) async -> Void
     ) async throws {
         guard let pending = original.pendingClips, !pending.isEmpty else { return }
@@ -261,6 +262,8 @@ enum NightAnalysis {
         var firstError: Error?
         let logger = Logger(subsystem: "com.vesco.sleeptracker", category: "analysis")
         var consecutiveFailures = 0
+        var remaining = pending.reduce(0) { $0 + $1.duration }
+        var lastPercent = Int((original.analysisProgress * 100).rounded())
 
         for clip in pending {
             if Task.isCancelled { break }
@@ -276,6 +279,16 @@ enum NightAnalysis {
                 }
                 completed.insert(clip.id)
                 consecutiveFailures = 0
+                remaining -= clip.duration
+                // Publish whole-percent changes without adding disk checkpoints.
+                if original.duration > 0 {
+                    let progress = min(0.99, max(0, 1 - remaining / original.duration))
+                    let percent = Int((progress * 100).rounded())
+                    if percent != lastPercent {
+                        lastPercent = percent
+                        await didProgress(progress)
+                    }
+                }
             } catch {
                 firstError = firstError ?? error
                 consecutiveFailures += 1

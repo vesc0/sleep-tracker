@@ -328,9 +328,17 @@ private struct NightDetail: View {
                     }
 
                     if model.analyzingID == night.id {
-                        ProgressView("Analyzing recording… Keep Sleep tracker open.")
-                            .tint(accent)
+                        ProgressView(value: model.analysisProgress) {
+                            Text("Analyzing recording… Keep Sleep tracker open.")
+                        } currentValueLabel: {
+                            Text(model.analysisProgress, format: .percent.precision(.fractionLength(0)))
+                                .monospacedDigit()
+                        }
+                        .tint(accent)
                     } else if night.needsAnalysis {
+                        Text("\(night.analysisProgress, format: .percent.precision(.fractionLength(0))) analyzed")
+                            .font(.subheadline.monospacedDigit())
+                            .foregroundStyle(muted)
                         Button("Analyze remaining audio") { model.analyze(night.id) }
                             .buttonStyle(.bordered)
                             .disabled(model.startedAt != nil || model.isBusy || model.analyzingID != nil)

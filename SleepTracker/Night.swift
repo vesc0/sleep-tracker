@@ -65,6 +65,13 @@ struct Night: Codable, Identifiable {
     var needsAnalysis: Bool { !(pendingClips ?? []).isEmpty }
 
     var duration: TimeInterval { endedAt.timeIntervalSince(startedAt) }
+
+    var analysisProgress: Double {
+        guard needsAnalysis, duration > 0 else { return needsAnalysis ? 0 : 1 }
+        // Pending audio remains in the archive across pauses and retries.
+        let remaining = pendingClips?.reduce(0) { $0 + $1.duration } ?? 0
+        return min(0.99, max(0, 1 - remaining / duration))
+    }
 }
 
 struct NightArchive {
