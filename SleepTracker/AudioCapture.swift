@@ -1,6 +1,7 @@
 // AudioCapture writes short microphone segments, including while the phone is locked.
 // NightAnalysis checks them for snoring, speech, and coughing when the app is open.
 
+import Accelerate
 import AVFoundation
 import SoundAnalysis
 import OSLog
@@ -28,14 +29,15 @@ enum CaptureError: LocalizedError {
 
 private final class NightSoundObserver: NSObject, SNResultsObserving {
     private let lock = NSLock()
-    private var detected: Set<NightSound> = []
+    private var detected: [SoundWindow] = []
     private var failure: Error?
 
     func request(_ request: SNRequest, didProduce result: SNResult) {
-        guard let classification = (result as? SNClassificationResult)?.classifications.first,
+        guard let result = result as? SNClassificationResult, let classification = result.classifications.first,
               classification.confidence >= 0.55,
               let sound = NightSound(rawValue: classification.identifier) else { return }
-        lock.withLock { _ = detected.insert(sound) }
+        let range = result.timeRange
+        lock.withLock { detected.append(.init(sound: sound, start: range.start.seconds, end: range.end.seconds)) }
     }
 
     func request(_ request: SNRequest, didFailWithError error: Error) {
@@ -44,10 +46,10 @@ private final class NightSoundObserver: NSObject, SNResultsObserving {
 
     func requestDidComplete(_ request: SNRequest) {}
 
-    func result() throws -> [NightSound] {
+    func result() throws -> [SoundWindow] {
         try lock.withLock {
             if let failure { throw failure }
-            return NightSound.allCases.filter { detected.contains($0) }
+            return detected
         }
     }
 }
@@ -62,6 +64,8 @@ final class AudioCapture: @unchecked Sendable {
     private var file: AVAudioFile?
     private var converter: AVAudioConverter?
     private var segmentID = UUID()
+    private var energy = 0.0
+    private var peak: Float = 0
     private var frameCount: AVAudioFramePosition = 0
     private var tapInstalled = false
     private var failure: Error?
@@ -174,6 +178,15 @@ final class AudioCapture: @unchecked Sendable {
                 }
             }
             try file?.write(from: buffer)
+            if let samples = buffer.floatChannelData?[0] {
+                let count = vDSP_Length(buffer.frameLength)
+                var sum: Float = 0
+                var maximum: Float = 0
+                vDSP_svesq(samples, 1, &sum, count)
+                vDSP_maxmgv(samples, 1, &maximum, count)
+                energy += Double(sum)
+                peak = max(peak, maximum)
+            }
             frameCount += AVAudioFramePosition(buffer.frameLength)
             if Double(frameCount) / buffer.format.sampleRate >= 8 { finishSegment() }
         } catch {
@@ -219,8 +232,15 @@ final class AudioCapture: @unchecked Sendable {
         guard let rate = file?.processingFormat.sampleRate else { return }
         file = nil
         let duration = Double(frameCount) / rate
-        frameCount = 0
         let clip = SoundClip(id: segmentID, startedAt: night.endedAt, duration: duration)
+        if frameCount > 0 {
+            if night.levels == nil { night.levels = [] }
+            night.levels?.append(.init(start: clip.startedAt, duration: duration,
+                                       power: energy / Double(frameCount), peak: Double(peak)))
+        }
+        energy = 0
+        peak = 0
+        frameCount = 0
         night.endedAt = night.endedAt.addingTimeInterval(duration)
         let url = archive.clipURL(clip, in: night)
         guard failure == nil, duration >= 1.5 else {
@@ -274,7 +294,8 @@ enum NightAnalysis {
                 } else {
                     // Several distinct sounds can occur in a single recording segment.
                     var labeledClip = clip
-                    labeledClip.sounds = sounds
+                    labeledClip.windows = sounds
+                    labeledClip.sounds = NightSound.allCases.filter { label in sounds.contains { $0.sound == label } }
                     night.clips.append(labeledClip)
                 }
                 completed.insert(clip.id)
@@ -319,7 +340,7 @@ enum NightAnalysis {
         }
     }
 
-    private static func detectSounds(at url: URL, request: SNClassifySoundRequest) throws -> [NightSound] {
+    private static func detectSounds(at url: URL, request: SNClassifySoundRequest) throws -> [SoundWindow] {
         let observer = NightSoundObserver()
         let analyzer = try SNAudioFileAnalyzer(url: url)
         try analyzer.add(request, withObserver: observer)

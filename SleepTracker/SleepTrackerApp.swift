@@ -261,21 +261,21 @@ struct NightRow: View {
     }
 }
 
-private struct SoundCountValue: View {
+struct SoundCountValue: View {
     let night: Night
     var showUnit = false
 
     var body: some View {
-        let count = night.activeClips.count
-        let unit = count == 1 ? "clip" : "clips"
+        let count = night.episodes.count
+        let unit = count == 1 ? "episode" : "episodes"
         Text(showUnit ? "\(count) \(unit)" : String(count))
             .bold()
             .monospacedDigit()
-            .foregroundStyle(night.needsAnalysis ? muted : color(for: count))
+            .foregroundStyle(night.needsAnalysis ? muted : Self.color(for: count))
             .accessibilityLabel(night.needsAnalysis ? "\(count) \(unit) so far, analysis pending" : "\(count) \(unit)")
     }
 
-    private func color(for count: Int) -> Color {
+    static func color(for count: Int) -> Color {
         switch count {
         case 0: .green
         case 1...5: .yellow
@@ -314,7 +314,7 @@ private struct NightDetail: View {
                         metric(label: "Sleep duration") {
                             SleepDurationValue(seconds: night.duration)
                         }
-                        metric(label: "Saved clips") {
+                        metric(label: "Sound episodes") {
                             SoundCountValue(night: night)
                         }
                     }
@@ -348,18 +348,7 @@ private struct NightDetail: View {
                         Text(problem).font(.footnote).foregroundStyle(muted)
                     }
 
-                    if night.duration > 0 {
-                        timeline
-                    }
-
-                    Text("Detected sounds").font(.title3.bold()).accessibilityAddTraits(.isHeader)
-                    if night.activeClips.isEmpty, !night.needsAnalysis {
-                        Text("No nighttime sounds were flagged.")
-                            .foregroundStyle(muted)
-                    }
-                    ForEach(night.activeClips) { clip in
-                        ClipRow(clip: clip, night: night)
-                    }
+                    SessionSoundsView(night: night)
                     if night.activeClips.count < night.clips.count {
                         DisclosureGroup("Dismissed clips (\(night.clips.count - night.activeClips.count))", isExpanded: $showDismissed) {
                             ForEach(night.clips.filter { $0.isDismissed == true }) { clip in
@@ -445,34 +434,6 @@ private struct NightDetail: View {
         .background(surface, in: RoundedRectangle(cornerRadius: 16))
     }
 
-    private var timeline: some View {
-        let playingID = model.playingID
-        return VStack(spacing: 10) {
-            Canvas { context, size in
-                let track = CGRect(x: 0, y: size.height / 2 - 2, width: size.width, height: 4)
-                context.fill(Path(roundedRect: track, cornerRadius: 2), with: .color(accent.opacity(0.20)))
-                for clip in night.activeClips {
-                    let position = clip.startedAt.timeIntervalSince(night.startedAt) / night.duration
-                    // Keep short clips visible on a full-night timeline.
-                    let width = max(2, clip.duration / night.duration * size.width)
-                    let mark = CGRect(x: min(size.width - width, position * size.width),
-                                      y: 0, width: width, height: size.height)
-                    let color = playingID == clip.id ? playbackColor : accent
-                    context.fill(Path(roundedRect: mark, cornerRadius: 1), with: .color(color))
-                }
-            }
-            .frame(height: 17)
-            HStack {
-                Text(night.startedAt, style: .time)
-                Spacer()
-                Text(night.endedAt, style: .time)
-            }
-            .font(.caption.monospacedDigit())
-            .foregroundStyle(muted)
-        }
-        .accessibilityHidden(true)
-    }
-
     private func metric<Value: View>(label: String, @ViewBuilder value: () -> Value) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             value().font(.title2.weight(.semibold).monospacedDigit())
@@ -508,10 +469,12 @@ private struct NightCheckInEditor: View {
                     .pickerStyle(.segmented)
                     Text("1 · Not rested     5 · Very rested").font(.footnote)
                 }
+                .listRowBackground(surface)
                 Section("Notes") {
                     TextField("Add a note", text: $draft.notes, axis: .vertical)
                         .lineLimit(3...6)
                 }
+                .listRowBackground(surface)
                 Section("Tags") {
                     ForEach(NightTag.allCases) { tag in
                         Toggle(tag.rawValue, isOn: Binding(
@@ -523,7 +486,10 @@ private struct NightCheckInEditor: View {
                         ))
                     }
                 }
+                .listRowBackground(surface)
             }
+            .scrollContentBackground(.hidden)
+            .background(nightBackground)
             .navigationTitle("Sleep rating")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -544,7 +510,7 @@ private struct NightCheckInEditor: View {
 
 private let playbackColor = Color(red: 0.37, green: 0.89, blue: 0.80)
 
-private struct ClipRow: View {
+struct ClipRow: View {
     let clip: SoundClip
     let night: Night
     @EnvironmentObject private var model: SessionModel

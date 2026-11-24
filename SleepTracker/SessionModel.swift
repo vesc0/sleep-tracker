@@ -54,8 +54,9 @@ final class SessionModel: NSObject, ObservableObject, AVAudioPlayerDelegate {
 
             let clipCount = (offset * 11) % 19
             let clips = (0..<clipCount).map { index in
-                let position = duration * Double(index + 1) / Double(clipCount + 1)
-                let sound = NightSound.allCases[(offset + index) % NightSound.allCases.count]
+                let group = index / 3
+                let position = duration * Double(group + 1) / Double(clipCount / 3 + 2) + Double(index % 3) * 8
+                let sound = NightSound.allCases[(offset + group) % NightSound.allCases.count]
                 let sounds: [NightSound] = index.isMultiple(of: 5) && sound == .snoring
                     ? [.snoring, .speech] : [sound]
                 return SoundClip(id: UUID(), startedAt: start.addingTimeInterval(position),
@@ -63,7 +64,16 @@ final class SessionModel: NSObject, ObservableObject, AVAudioPlayerDelegate {
             }
             let tags: Set<NightTag> = offset.isMultiple(of: 3) ? [.lateCaffeine, .backSleeping] : [.sideSleeping]
             let checkIn = NightCheckIn(restedRating: offset.isMultiple(of: 4) ? nil : 1 + offset % 5, tags: tags)
-            return Night(id: UUID(), startedAt: start, endedAt: end, isComplete: true, clips: clips, checkIn: checkIn)
+            // Sparse background samples keep the debug dataset small.
+            let background = stride(from: 0.0, to: duration, by: 60).map { position in
+                let power = 0.00001 * (2 + sin(position / 600))
+                return RecordingLevel(start: start.addingTimeInterval(position), duration: 8,
+                                      power: power, peak: 3 * sqrt(power))
+            }
+            let detected = clips.map { RecordingLevel(start: $0.startedAt, duration: $0.duration,
+                                                       power: 0.001, peak: 0.12) }
+            return Night(id: UUID(), startedAt: start, endedAt: end, isComplete: true, clips: clips,
+                         checkIn: checkIn, levels: (background + detected).sorted { $0.start < $1.start })
         }
     }
 

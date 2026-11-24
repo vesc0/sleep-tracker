@@ -10,14 +10,17 @@ struct TrendNight: Identifiable {
     var id: Date { date }
     var duration: TimeInterval { sessions.reduce(0) { $0 + $1.duration } }
 
-    func soundRate(for sound: NightSound?) -> Double? {
-        let analyzed = sessions.filter { !$0.needsAnalysis }
-        let hours = analyzed.reduce(0) { $0 + $1.duration } / 3_600
-        guard hours > 0 else { return nil }
+    private var analyzedSessions: [Night] { sessions.filter { !$0.needsAnalysis } }
 
-        let count = analyzed.flatMap(\.activeClips).count { clip in
-            sound.map { clip.labels.contains($0) } ?? true
-        }
+    func episodeCount(for sound: NightSound?) -> Int? {
+        let analyzed = analyzedSessions
+        guard !analyzed.isEmpty else { return nil }
+        return analyzed.flatMap(\.episodes).count { sound == nil || $0.sound == sound }
+    }
+
+    var soundRate: Double? {
+        let hours = analyzedSessions.reduce(0) { $0 + $1.duration } / 3_600
+        guard hours > 0, let count = episodeCount(for: nil) else { return nil }
         return Double(count) / hours
     }
 
@@ -61,7 +64,8 @@ struct TrendsView: View {
     @Environment(\.timeZone) private var timeZone
     @State private var days = 7
     @State private var sound: NightSound?
-    @State private var selectedDay: Int?
+    private enum SelectedChart { case duration, sounds }
+    @State private var selection: (chart: SelectedChart, day: Int)?
     @State private var comparisonTag = NightTag.lateCaffeine
     @AppStorage("bedtimeGoalEnabled") private var bedtimeGoalEnabled = false
     @AppStorage("bedtimeGoalMinutes") private var bedtimeGoalMinutes = 23 * 60
@@ -98,9 +102,6 @@ struct TrendsView: View {
                         } else {
                             durationCard(nights, tracked: tracked)
                             soundsCard(nights)
-                            if let selectedDay, nights.indices.contains(selectedDay) {
-                                sessionLinks(for: nights[selectedDay])
-                            }
                             restedCard(nights)
                         }
                         timingCard(nights)
@@ -110,13 +111,13 @@ struct TrendsView: View {
                     .padding(24)
                     .frame(maxWidth: .infinity, alignment: .top)
                 }
-                .onChange(of: nights.first?.date) { _, _ in selectedDay = nil }
+                .onChange(of: nights.first?.date) { _, _ in selection = nil }
             }
             .background(nightBackground.ignoresSafeArea())
             .navigationTitle("Trends")
             .navigationBarTitleDisplayMode(.large)
         }
-        .onChange(of: days) { _, _ in selectedDay = nil }
+        .onChange(of: days) { _, _ in selection = nil }
         .toolbarBackground(nightBackground, for: .tabBar)
         .toolbarBackground(.visible, for: .tabBar)
     }
@@ -134,7 +135,7 @@ struct TrendsView: View {
                     if nights[index].duration > 0 {
                         nightBar(at: index, value: nights[index].duration / 3_600, axis: "Sleep duration in hours")
                             .foregroundStyle(SleepDurationValue.color(for: nights[index].duration)
-                                .opacity(selectedDay == nil || selectedDay == index ? 1 : 0.45))
+                                .opacity(selection?.chart != .duration || selection?.day == index ? 1 : 0.45))
                             .accessibilityLabel(nights[index].date.formatted(date: .abbreviated, time: .omitted))
                             .accessibilityValue(durationText(nights[index].duration))
                     }
@@ -145,16 +146,26 @@ struct TrendsView: View {
                     .accessibilityHidden(true)
             }
             .chartYScale(domain: 0...max(1, (tracked.map(\.duration).max() ?? 0) / 3_600 * 1.1))
-            .chartYAxisLabel("Hours")
-            .modifier(NightChartAxis(nights: nights))
-            .chartXSelection(value: daySelection)
+            .chartYAxis {
+                AxisMarks { value in
+                    AxisGridLine()
+                    if let hours = value.as(Double.self) {
+                        AxisValueLabel { Text("\(hours, format: .number)h") }
+                    }
+                }
+            }
+            .modifier(NightChartAxis(nights: nights) { selection = (.duration, $0) })
+            if let selection, selection.chart == .duration, nights.indices.contains(selection.day) {
+                sessionLinks(for: nights[selection.day])
+            }
         }
     }
 
     private func soundsCard(_ nights: [TrendNight]) -> some View {
-        let rates = nights.map { $0.soundRate(for: sound) }
+        let counts = nights.map { $0.episodeCount(for: sound) }
+        let maximum = max(1, counts.compactMap { $0 }.max() ?? 0)
 
-        return trendCard("Nighttime sounds", help: "Only analyzed sessions count. Dismissed clips are excluded. Green means zero clips per hour. Yellow means above zero and up to 0.625 clips per hour. Red means more than 0.625. The cutoff is five clips in eight hours.") {
+        return trendCard("Nighttime sounds", help: "Only analyzed sessions count. Dismissed clips are excluded. Each bar counts the detected episodes that night. Green means zero, yellow means one to five, and red means six or more.") {
             Picker("Sound type", selection: $sound) {
                 Text("All sounds").tag(nil as NightSound?)
                 ForEach(NightSound.allCases, id: \.self) { sound in
@@ -164,34 +175,37 @@ struct TrendsView: View {
             .pickerStyle(.menu)
             .tint(accent)
 
-            if rates.allSatisfy({ $0 == nil }) {
+            if counts.allSatisfy({ $0 == nil }) {
                 Text("Analyze a session to see sound trends.")
                     .font(.subheadline).foregroundStyle(muted)
             } else {
-                Text("Flagged clips per session hour")
+                Text("Detected episodes per night")
                     .font(.subheadline).foregroundStyle(muted)
                 Chart {
                     ForEach(nights.indices, id: \.self) { index in
-                        if let rate = rates[index] {
-                            let color = soundRateColor(rate)
-                                .opacity(selectedDay == nil || selectedDay == index ? 1 : 0.45)
-                            if rate > 0 {
-                                nightBar(at: index, value: rate, axis: "Clips per hour")
+                        if let count = counts[index] {
+                            let color = SoundCountValue.color(for: count)
+                                .opacity(selection?.chart != .sounds || selection?.day == index ? 1 : 0.45)
+                            if count > 0 {
+                                nightBar(at: index, value: Double(count), axis: "Episodes")
                                     .foregroundStyle(color)
                                     .accessibilityLabel(nights[index].date.formatted(date: .abbreviated, time: .omitted))
-                                    .accessibilityValue(rate.formatted(.number.precision(.fractionLength(0...1))))
+                                    .accessibilityValue(String(count))
                             } else {
-                                PointMark(x: .value("Night", Double(index)), y: .value("Clips per hour", 0.0))
+                                PointMark(x: .value("Night", Double(index)), y: .value("Episodes", 0.0))
                                     .foregroundStyle(color)
                                     .accessibilityLabel(nights[index].date.formatted(date: .abbreviated, time: .omitted))
-                                    .accessibilityValue("0 clips per hour")
+                                    .accessibilityValue("0 episodes")
                             }
                         }
                     }
                 }
-                .chartYScale(domain: 0...max(1, (rates.compactMap { $0 }.max() ?? 0) * 1.1))
-                .modifier(NightChartAxis(nights: nights))
-                .chartXSelection(value: daySelection)
+                .chartYScale(domain: 0...Double(maximum) * 1.1)
+                .chartYAxis { AxisMarks(values: .stride(by: max(1, ceil(Double(maximum) / 4)))) }
+                .modifier(NightChartAxis(nights: nights) { selection = (.sounds, $0) })
+                if let selection, selection.chart == .sounds, nights.indices.contains(selection.day) {
+                    sessionLinks(for: nights[selection.day])
+                }
             }
         }
     }
@@ -244,11 +258,15 @@ struct TrendsView: View {
         let lower = floor((bounds.min() ?? 20) / 2) * 2 - 0.5
         let upper = ceil((bounds.max() ?? 32) / 2) * 2 + 0.5
 
-        return trendCard("Bedtime consistency", help: "Circles show when recording started and diamonds show when it ended. Dashed lines show your goals when enabled. Changing bedtime sets the wake-up goal to eight hours later.") {
+        return trendCard("Bedtime consistency", help: "Circles show when recording started and diamonds show when it ended. Dashed lines show your goals when enabled. Later times appear higher as the night progresses through midnight. Changing bedtime sets the wake-up goal to eight hours later.") {
             Toggle("Bedtime goal", isOn: $bedtimeGoalEnabled)
+                .font(.subheadline)
             if bedtimeGoalEnabled {
-                DatePicker("Bedtime", selection: bedtimeGoal, displayedComponents: .hourAndMinute)
-                DatePicker("Wake-up goal", selection: wakeGoal, displayedComponents: .hourAndMinute)
+                HStack(spacing: 6) {
+                    goalPicker("Bedtime", selection: bedtimeGoal)
+                    Spacer(minLength: 0)
+                    goalPicker("Wake up", selection: wakeGoal)
+                }
             }
             if sessions.isEmpty {
                 Text("Record a session to see start and end times.")
@@ -296,6 +314,15 @@ struct TrendsView: View {
         }
     }
 
+    private func goalPicker(_ title: String, selection: Binding<Date>) -> some View {
+        HStack(spacing: 4) {
+            Text(title).font(.subheadline).foregroundStyle(muted).lineLimit(1)
+            DatePicker(title, selection: selection, displayedComponents: .hourAndMinute)
+                .datePickerStyle(.compact)
+                .labelsHidden()
+        }
+    }
+
     private var bedtimeGoal: Binding<Date> {
         Binding(
             get: { clockTime(minutes: bedtimeGoalMinutes) ?? .now },
@@ -340,13 +367,11 @@ struct TrendsView: View {
         let tagged = checkedIn.filter { $0.tags.contains(comparisonTag) }
         let other = checkedIn.filter { !$0.tags.contains(comparisonTag) }
 
-        return trendCard("Compare tags", help: "Compare nights with and without the selected tag. Duration uses recorded sessions, rested averages use ratings you entered, and sound rates use analyzed sessions. Sound colors use the same scale as Nighttime sounds.") {
+        return trendCard("Compare tags", help: "Includes nights with a rating, notes, or tags. Compare nights with and without the selected tag. Duration uses recorded sessions, rested averages use ratings you entered, and sound rates use analyzed sessions. Hourly rates are green at zero, yellow through 0.625, and red above that.") {
             Picker("Tag", selection: $comparisonTag) {
                 ForEach(NightTag.allCases) { tag in Text(tag.rawValue).tag(tag) }
             }
             .pickerStyle(.menu)
-            Text("Includes nights with a rating, notes, or tags.")
-                .font(.subheadline).foregroundStyle(muted)
             comparisonRow("With tag", nights: tagged)
             comparisonRow("Without tag", nights: other)
         }
@@ -364,7 +389,7 @@ struct TrendsView: View {
                 }
                 .font(.subheadline)
                 .accessibilityElement(children: .combine)
-                let soundRates = nights.compactMap { $0.soundRate(for: nil) }
+                let soundRates = nights.compactMap { $0.soundRate }
                 if !soundRates.isEmpty {
                     let averageRate = soundRates.reduce(0, +) / Double(soundRates.count)
                     HStack(spacing: 4) {
@@ -372,7 +397,7 @@ struct TrendsView: View {
                             .bold()
                             .monospacedDigit()
                             .foregroundStyle(soundRateColor(averageRate))
-                        Text("sound clips/hr · \(soundRates.count) analyzed").foregroundStyle(muted)
+                        Text("episodes/hr · \(soundRates.count) analyzed").foregroundStyle(muted)
                     }
                     .font(.subheadline)
                     .accessibilityElement(children: .combine)
@@ -407,7 +432,7 @@ struct TrendsView: View {
     }
 
     private func soundRateColor(_ rate: Double) -> Color {
-        // Normalize the five-clip cutoff to an eight-hour session.
+        // Normalize the five-episode cutoff to an eight-hour session.
         switch rate {
         case 0: .green
         case ...0.625: .yellow
@@ -426,16 +451,16 @@ struct TrendsView: View {
         )
     }
 
-    private var daySelection: Binding<Double?> {
-        Binding(
-            get: { selectedDay.map { Double($0) } },
-            set: { selectedDay = $0.map { Int($0.rounded()) } }
-        )
-    }
-
     private func sessionLinks(for night: TrendNight) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(night.date.formatted(date: .complete, time: .omitted)).font(.headline)
+            HStack {
+                Text(night.date.formatted(date: .complete, time: .omitted)).font(.headline)
+                Spacer()
+                Button { selection = nil } label: {
+                    Image(systemName: "xmark.circle.fill").frame(width: 44, height: 44)
+                }
+                .accessibilityLabel("Close selected night")
+            }
             if night.sessions.isEmpty {
                 Text("No sessions recorded").foregroundStyle(muted)
             }
@@ -520,19 +545,47 @@ private struct TrendInfoButton: View {
 private struct NightChartAxis: ViewModifier {
     let nights: [TrendNight]
 
+    var select: ((Int) -> Void)? = nil
+
+    @ScaledMetric(relativeTo: .caption2) private var dateRowHeight: CGFloat = 20
+
     func body(content: Content) -> some View {
+        let ticks = nights.indices.filter { nights.count <= 7 || $0.isMultiple(of: 6) || $0 == nights.count - 1 }
         content
             .chartXScale(domain: -0.5...(Double(nights.count) - 0.5))
-            .chartXAxis {
-                AxisMarks(values: stride(from: 0, to: nights.count, by: nights.count > 7 ? 7 : 2).map { Double($0) }) { value in
-                    if let index = value.as(Double.self).map(Int.init), nights.indices.contains(index) {
-                        AxisValueLabel {
-                            Text(nights[index].date, format: .dateTime.month(.abbreviated).day())
+            .chartXAxis(.hidden)
+            .chartOverlay { proxy in
+                GeometryReader { area in
+                    if let anchor = proxy.plotFrame {
+                        let plot = area[anchor]
+                        ForEach(ticks, id: \.self) { index in
+                            if let x = proxy.position(forX: Double(index)) {
+                                Text(nights[index].date, format: .dateTime.day())
+                                    .font(.caption2).foregroundStyle(.secondary)
+                                    .fixedSize()
+                                    .position(x: plot.minX + x, y: plot.maxY + dateRowHeight / 2)
+                                    .allowsHitTesting(false)
+                            }
+                        }
+                        if let select {
+                            Rectangle().fill(.clear).contentShape(Rectangle())
+                                .frame(width: plot.width, height: plot.height)
+                                .onTapGesture { tap in
+                                    if let day: Double = proxy.value(atX: tap.x) {
+                                        select(min(nights.count - 1, max(0, Int(day.rounded()))))
+                                    }
+                                }
+                                .position(x: plot.midX, y: plot.midY)
                         }
                     }
                 }
             }
-            .frame(maxWidth: .infinity)
+            .padding(.bottom, dateRowHeight)
             .frame(height: 155)
+        if let first = nights.first, let last = nights.last {
+            Text("\(first.date, format: .dateTime.month(.abbreviated).day()) – \(last.date, format: .dateTime.month(.abbreviated).day())")
+                .font(.caption).foregroundStyle(muted)
+                .frame(maxWidth: .infinity)
+        }
     }
 }

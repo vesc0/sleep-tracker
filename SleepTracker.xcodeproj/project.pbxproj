@@ -10,6 +10,8 @@
 		04232CB7BA7F1F2643A38957 /* SleepTrackerApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DE93E4F6FEFECF52BDC7980 /* SleepTrackerApp.swift */; };
 		D9B927DD82114B41A620056C /* TrendsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1EE2B32B17424406B6B6CEB6 /* TrendsView.swift */; };
 		A771372B5992F35B080B057B /* Night.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8263C0F6BFDCCD37DDDACEE9 /* Night.swift */; };
+		CB41461EE7234D82817A9183 /* SessionSoundsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6CA80D763AE4BCCA1B25E6A /* SessionSoundsView.swift */; };
+		C5370AB61E5340B8A26382ED /* SoundEpisodes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8BAF40B377154DCD88322759 /* SoundEpisodes.swift */; };
 		AA64407BFCC34ECF6487F2DD /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 06C18445D66A8CBC60434C37 /* Assets.xcassets */; };
 		C8A7DD070B9D6EBA65152E84 /* AudioCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA95AEAA419DC4FECEA639BD /* AudioCapture.swift */; };
 		CBCE02C3B86DF87ADEC8FE2C /* SessionModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4CDAD369BD6D9C3CEA151C63 /* SessionModel.swift */; };
@@ -22,6 +24,8 @@
 		4CDAD369BD6D9C3CEA151C63 /* SessionModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionModel.swift; sourceTree = "<group>"; };
 		777177D2912BDDA25EBFA2F1 /* SleepTracker.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SleepTracker.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		8263C0F6BFDCCD37DDDACEE9 /* Night.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Night.swift; sourceTree = "<group>"; };
+		D6CA80D763AE4BCCA1B25E6A /* SessionSoundsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionSoundsView.swift; sourceTree = "<group>"; };
+		8BAF40B377154DCD88322759 /* SoundEpisodes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SoundEpisodes.swift; sourceTree = "<group>"; };
 		AA95AEAA419DC4FECEA639BD /* AudioCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioCapture.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -48,6 +52,8 @@
 				06C18445D66A8CBC60434C37 /* Assets.xcassets */,
 				AA95AEAA419DC4FECEA639BD /* AudioCapture.swift */,
 				8263C0F6BFDCCD37DDDACEE9 /* Night.swift */,
+				D6CA80D763AE4BCCA1B25E6A /* SessionSoundsView.swift */,
+				8BAF40B377154DCD88322759 /* SoundEpisodes.swift */,
 				3DE93E4F6FEFECF52BDC7980 /* SleepTrackerApp.swift */,
 				1EE2B32B17424406B6B6CEB6 /* TrendsView.swift */,
 				4CDAD369BD6D9C3CEA151C63 /* SessionModel.swift */,
@@ -122,6 +128,8 @@
 			files = (
 				C8A7DD070B9D6EBA65152E84 /* AudioCapture.swift in Sources */,
 				A771372B5992F35B080B057B /* Night.swift in Sources */,
+				CB41461EE7234D82817A9183 /* SessionSoundsView.swift in Sources */,
+				C5370AB61E5340B8A26382ED /* SoundEpisodes.swift in Sources */,
 				04232CB7BA7F1F2643A38957 /* SleepTrackerApp.swift in Sources */,
 				D9B927DD82114B41A620056C /* TrendsView.swift in Sources */,
 				CBCE02C3B86DF87ADEC8FE2C /* SessionModel.swift in Sources */,

@@ -22,6 +22,7 @@ struct SoundClip: Codable, Identifiable {
     let startedAt: Date
     let duration: TimeInterval
     var sounds: [NightSound]?
+    var windows: [SoundWindow]?
     var isDismissed: Bool?
 
     var labels: [NightSound] { sounds ?? [.snoring] }
@@ -59,6 +60,7 @@ struct Night: Codable, Identifiable {
     var pendingClips: [SoundClip]?
 
     var checkIn: NightCheckIn?
+    var levels: [RecordingLevel]?
 
     var activeClips: [SoundClip] { clips.filter { $0.isDismissed != true } }
 
