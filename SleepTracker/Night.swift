@@ -49,6 +49,26 @@ struct NightCheckIn: Codable {
     var tags: Set<NightTag> = []
 }
 
+struct RecordingOptions: Codable {
+    let sounds: [NightSound]
+    let sampleRate: Double
+    let keepFullAudio: Bool
+    let autoResume: Bool
+
+    init(defaults: UserDefaults = .standard) {
+        sounds = NightSound.allCases.filter { defaults.object(forKey: "detect." + $0.rawValue) as? Bool ?? true }
+        sampleRate = defaults.bool(forKey: "highQualityAudio") ? 44_100 : 16_000
+        keepFullAudio = defaults.bool(forKey: "keepFullAudio")
+        autoResume = defaults.object(forKey: "autoResume") as? Bool ?? true
+    }
+}
+
+struct RecordingGap: Codable {
+    let start: Date
+    var end: Date?
+    let reason: String
+}
+
 struct Night: Codable, Identifiable {
     let id: UUID
     let startedAt: Date
@@ -61,12 +81,24 @@ struct Night: Codable, Identifiable {
 
     var checkIn: NightCheckIn?
     var levels: [RecordingLevel]?
+    var options: RecordingOptions?
+    var gaps: [RecordingGap]?
+
+    var fullRecording: SoundClip? {
+        guard options?.keepFullAudio == true else { return nil }
+        return SoundClip(id: id, startedAt: startedAt, duration: duration, sounds: [])
+    }
 
     var activeClips: [SoundClip] { clips.filter { $0.isDismissed != true } }
 
     var needsAnalysis: Bool { !(pendingClips ?? []).isEmpty }
 
-    var duration: TimeInterval { endedAt.timeIntervalSince(startedAt) }
+    var elapsed: TimeInterval { endedAt.timeIntervalSince(startedAt) }
+
+    var duration: TimeInterval {
+        let paused = (gaps ?? []).reduce(0) { $0 + ($1.end ?? endedAt).timeIntervalSince($1.start) }
+        return max(0, elapsed - paused)
+    }
 
     var analysisProgress: Double {
         guard needsAnalysis, duration > 0 else { return needsAnalysis ? 0 : 1 }
@@ -138,7 +170,8 @@ struct NightArchive {
                     night.wasInterrupted = true
                     try save(night)
                 }
-                let retained = Set((night.clips + (night.pendingClips ?? [])).map { clipURL($0, in: night).lastPathComponent })
+                var retained = Set((night.clips + (night.pendingClips ?? [])).map { clipURL($0, in: night).lastPathComponent })
+                if let full = night.fullRecording { retained.insert(clipURL(full, in: night).lastPathComponent) }
                 for url in try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
                 where url.pathExtension == "caf" && !retained.contains(url.lastPathComponent) {
                     try FileManager.default.removeItem(at: url)

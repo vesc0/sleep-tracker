@@ -38,13 +38,15 @@ struct SessionSoundsView: View {
             }
             if night.duration > 0 {
                 timeline(episodes, levels: levels)
-                if !episodes.isEmpty && !model.isSampleNight(night.id) {
+                if let clip = episodes.first?.clips.first, model.audioURL(for: clip, in: night) != nil {
                     Text("Tap a colored marker to hear its recording.").font(.caption).foregroundStyle(muted)
                 }
             }
             Text("Sound episodes").font(.headline)
             if night.needsAnalysis {
                 Text("Totals so far").font(.caption).foregroundStyle(muted)
+            } else if night.options?.sounds.isEmpty == true {
+                Text("Sound detection was off for this session.").foregroundStyle(muted)
             } else if episodes.isEmpty {
                 Text("No nighttime sounds were flagged.").foregroundStyle(muted)
             }
@@ -88,7 +90,7 @@ struct SessionSoundsView: View {
         return VStack {
             GeometryReader { proxy in
                 Canvas { context, size in
-                    let scale = size.width / night.duration
+                    let scale = size.width / night.elapsed
                     for level in levels {
                         let x = level.start.timeIntervalSince(night.startedAt) * scale
                         let height = min(1, max(0, 1 + RecordingLevel.decibels(level.power) / 90)) * 44
@@ -105,7 +107,7 @@ struct SessionSoundsView: View {
                 }
                 .contentShape(Rectangle())
                 .onTapGesture { point in
-                    let scale = proxy.size.width / night.duration
+                    let scale = proxy.size.width / night.elapsed
                     let lane = Int(floor((point.y - 48) / 8))
                     guard NightSound.allCases.indices.contains(lane), scale > 0 else { return }
                     let time = night.startedAt.addingTimeInterval(point.x / scale)

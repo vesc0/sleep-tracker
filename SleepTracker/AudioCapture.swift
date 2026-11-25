@@ -61,6 +61,7 @@ final class AudioCapture: @unchecked Sendable {
     private let archive: NightArchive
     private let onFailure: (Error) -> Void
     private var night: Night
+    private var fullFile: AVAudioFile?
     private var file: AVAudioFile?
     private var converter: AVAudioConverter?
     private var segmentID = UUID()
@@ -77,7 +78,7 @@ final class AudioCapture: @unchecked Sendable {
     }
 
     @MainActor
-    func start() throws {
+    func start(resuming: Bool = false) throws {
         let session = AVAudioSession.sharedInstance()
         do {
             try session.setCategory(.record, mode: .measurement)
@@ -87,9 +88,9 @@ final class AudioCapture: @unchecked Sendable {
             guard format.sampleRate > 0, format.channelCount > 0 else {
                 throw CaptureError.microphoneUnavailable
             }
-            let converter = try Self.makeConverter(from: format)
+            let converter = try Self.makeConverter(from: format, rate: night.options?.sampleRate ?? 16_000)
             queue.sync { self.converter = converter }
-            try archive.begin(night)
+            if !resuming { try archive.begin(night) }
             input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
                 self?.enqueue(buffer)
             }
@@ -98,8 +99,23 @@ final class AudioCapture: @unchecked Sendable {
         } catch {
             stopInput()
             queue.sync {}
-            try? archive.delete(night)
+            if !resuming { try? archive.delete(night) }
             throw error
+        }
+    }
+
+    @MainActor
+    func pause(reason: String) throws {
+        engine.stop()
+        removeTap()
+        try queue.sync {
+            finishSegment()
+            converter = nil
+            if let gap = night.gaps?.last, gap.end == nil { return }
+            if night.gaps == nil { night.gaps = [] }
+            let gap = RecordingGap(start: night.endedAt, reason: reason)
+            night.gaps?.append(gap)
+            try archive.save(night)
         }
     }
 
@@ -112,6 +128,8 @@ final class AudioCapture: @unchecked Sendable {
         return try await withCheckedThrowingContinuation { continuation in
             queue.async {
                 self.finishSegment()
+                self.fullFile = nil
+                self.closeGap(at: Date())
                 self.night.isComplete = true
                 self.night.wasInterrupted = interrupted || self.failure != nil
                 do {
@@ -156,6 +174,29 @@ final class AudioCapture: @unchecked Sendable {
         queue.async { self.consume(copy) }
     }
 
+    // Keep clip timestamps on wall time, excluding the pause from recording duration.
+    private func closeGap(at time: Date) {
+        guard let last = night.gaps?.last, last.end == nil, let count = night.gaps?.count else { return }
+        let end = max(last.start, time)
+        night.gaps?[count - 1].end = end
+        night.endedAt = end
+    }
+
+    private func openFile(_ id: UUID, format: AVAudioFormat) throws -> AVAudioFile {
+        let url = archive.clipURL(id, in: night.id)
+        try Data().write(to: url, options: [.withoutOverwriting, .completeFileProtectionUntilFirstUserAuthentication])
+        var settings = format.settings
+        settings[AVLinearPCMBitDepthKey] = 16
+        settings[AVLinearPCMIsFloatKey] = false
+        do {
+            return try AVAudioFile(forWriting: url, settings: settings, commonFormat: format.commonFormat,
+                                   interleaved: format.isInterleaved)
+        } catch {
+            try? FileManager.default.removeItem(at: url)
+            throw error
+        }
+    }
+
     private func consume(_ input: AVAudioPCMBuffer) {
         guard failure == nil, let converter else { return }
         do {
@@ -163,19 +204,12 @@ final class AudioCapture: @unchecked Sendable {
             guard buffer.frameLength > 0 else { return }
             if file == nil {
                 segmentID = UUID()
-                let url = archive.clipURL(segmentID, in: night.id)
-                // Apply protection before Core Audio opens the file, including when already locked.
-                try Data().write(to: url, options: [.withoutOverwriting, .completeFileProtectionUntilFirstUserAuthentication])
-                do {
-                    var settings = buffer.format.settings
-                    settings[AVLinearPCMBitDepthKey] = 16
-                    settings[AVLinearPCMIsFloatKey] = false
-                    file = try AVAudioFile(forWriting: url, settings: settings,
-                                           commonFormat: buffer.format.commonFormat, interleaved: buffer.format.isInterleaved)
-                } catch {
-                    try? FileManager.default.removeItem(at: url)
-                    throw error
-                }
+                file = try openFile(segmentID, format: buffer.format)
+                closeGap(at: Date().addingTimeInterval(-Double(buffer.frameLength) / buffer.format.sampleRate))
+            }
+            if night.options?.keepFullAudio == true {
+                if fullFile == nil { fullFile = try openFile(night.id, format: buffer.format) }
+                try fullFile?.write(from: buffer)
             }
             try file?.write(from: buffer)
             if let samples = buffer.floatChannelData?[0] {
@@ -194,9 +228,8 @@ final class AudioCapture: @unchecked Sendable {
         }
     }
 
-    private static func makeConverter(from input: AVAudioFormat) throws -> AVAudioConverter {
-        // Use 16 kHz mono to reduce overnight storage.
-        guard let format = AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1),
+    private static func makeConverter(from input: AVAudioFormat, rate: Double) throws -> AVAudioConverter {
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: rate, channels: 1),
               let converter = AVAudioConverter(from: input, to: format) else {
             throw CaptureError.unsupportedAudioFormat
         }
@@ -243,14 +276,14 @@ final class AudioCapture: @unchecked Sendable {
         frameCount = 0
         night.endedAt = night.endedAt.addingTimeInterval(duration)
         let url = archive.clipURL(clip, in: night)
-        guard failure == nil, duration >= 1.5 else {
+        if failure != nil || duration < 1.5 || night.options?.sounds.isEmpty == true {
             do { try FileManager.default.removeItem(at: url) }
             catch { reportFailure(CaptureError.writeClip(error)) }
-            return
+        } else {
+            night.pendingClips?.append(clip)
         }
-        night.pendingClips?.append(clip)
         // Checkpoint in batches to limit disk writes during long sessions.
-        if let count = night.pendingClips?.count, count.isMultiple(of: 8) {
+        if let count = night.levels?.count, count.isMultiple(of: 8) {
             do { try archive.save(night) }
             catch { reportFailure(CaptureError.saveSession(error)) }
         }
@@ -276,6 +309,7 @@ enum NightAnalysis {
             throw CaptureError.classifierUnavailable
         }
 
+        let enabled = Set(original.options?.sounds ?? NightSound.allCases)
         var night = original
         var completed = Set<UUID>()
         var discarded: [SoundClip] = []
@@ -289,6 +323,7 @@ enum NightAnalysis {
             if Task.isCancelled { break }
             do {
                 let sounds = try detectSounds(at: archive.clipURL(clip, in: night), request: request)
+                    .filter { enabled.contains($0.sound) }
                 if sounds.isEmpty {
                     discarded.append(clip)
                 } else {

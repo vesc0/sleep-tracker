@@ -52,7 +52,8 @@ extension Night {
                     let start = clip.startedAt.addingTimeInterval(max(0, window.start))
                     let end = clip.startedAt.addingTimeInterval(min(clip.duration, window.end))
                     guard end > start else { continue }
-                    if let previousEnd = current?.end, start.timeIntervalSince(previousEnd) <= gap {
+                    if let previousEnd = current?.end, start.timeIntervalSince(previousEnd) <= gap,
+                       !(gaps ?? []).contains(where: { $0.start >= previousEnd && $0.start < start }) {
                         // Count overlapping evidence once and exclude pauses from sound totals.
                         current?.detectedDuration += max(0, end.timeIntervalSince(max(previousEnd, start)))
                         current?.end = max(previousEnd, end)

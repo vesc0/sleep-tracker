@@ -82,6 +82,12 @@ final class SessionModel: NSObject, ObservableObject, AVAudioPlayerDelegate {
     }
     #endif
 
+    @Published private(set) var pausedReason: String?
+    @Published private(set) var managingAudio = false
+    @Published private(set) var storageBytes: Int64 = 0
+    private var waitingForSystem = false
+    private var resumeTask: Task<Void, Never>?
+    private var autoResume = true
     private var archive: NightArchive?
     private var capture: AudioCapture?
     private var player: AVAudioPlayer?
@@ -99,7 +105,7 @@ final class SessionModel: NSObject, ObservableObject, AVAudioPlayerDelegate {
     }
 
     func start() async {
-        guard capture == nil, !isBusy, analyzingID == nil else { return }
+        guard capture == nil, !isBusy, !managingAudio, analyzingID == nil else { return }
         stopPlayback()
         isBusy = true
         defer { isBusy = false }
@@ -111,7 +117,9 @@ final class SessionModel: NSObject, ObservableObject, AVAudioPlayerDelegate {
             let archive = try self.archive ?? NightArchive()
             self.archive = archive
             let now = Date()
-            let night = Night(id: UUID(), startedAt: now, endedAt: now, pendingClips: [])
+            let options = RecordingOptions()
+            autoResume = options.autoResume
+            let night = Night(id: UUID(), startedAt: now, endedAt: now, pendingClips: [], options: options)
             let capture = AudioCapture(night: night, archive: archive) { [weak self] error in
                 Task { @MainActor in
                     await self?.finish(interrupted: true)
@@ -120,6 +128,7 @@ final class SessionModel: NSObject, ObservableObject, AVAudioPlayerDelegate {
             }
             try capture.start()
             self.capture = capture
+            waitingForSystem = false
             startedAt = now
         } catch {
             problem = error.localizedDescription
@@ -130,6 +139,9 @@ final class SessionModel: NSObject, ObservableObject, AVAudioPlayerDelegate {
     func finish(interrupted: Bool = false) async -> Night? {
         guard let capture, !isBusy else { return nil }
         isBusy = true
+        resumeTask?.cancel()
+        pausedReason = nil
+        waitingForSystem = false
         defer {
             startedAt = nil
             self.capture = nil
@@ -146,19 +158,80 @@ final class SessionModel: NSObject, ObservableObject, AVAudioPlayerDelegate {
     }
 
     func handleInterruption(_ notification: Notification) async {
-        guard notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
-            == AVAudioSession.InterruptionType.began.rawValue else { return }
-        stopPlayback()
-        await finish(interrupted: true)
+        guard let raw = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+        if type == .began {
+            stopPlayback()
+            waitingForSystem = true
+            resumeTask?.cancel()
+            let rawReason = notification.userInfo?[AVAudioSessionInterruptionReasonKey] as? UInt
+            let reason: String = switch rawReason.flatMap(AVAudioSession.InterruptionReason.init(rawValue:)) {
+            case .default: "Another audio session interrupted recording"
+            case .builtInMicMuted: "The built-in microphone was muted"
+            case .routeDisconnected: "The microphone disconnected"
+            default: "iOS interrupted microphone access"
+            }
+            await pauseCapture(reason)
+        } else if type == .ended {
+            waitingForSystem = false
+            scheduleResume()
+        }
     }
 
     func handleEngineChange(_ notification: Notification) async {
-        guard capture?.lostInput(notification) == true else { return }
-        await finish(interrupted: true)
+        guard capture?.lostInput(notification) == true, pausedReason == nil else { return }
+        await pauseCapture("The microphone input changed")
+        if !waitingForSystem { scheduleResume() }
+    }
+
+    private func pauseCapture(_ reason: String) async {
+        guard let capture, !isBusy, pausedReason == nil else { return }
+        do {
+            try capture.pause(reason: reason)
+            pausedReason = reason
+            if !autoResume { await finish(interrupted: true) }
+        } catch {
+            await finish(interrupted: true)
+            problem = error.localizedDescription
+        }
+    }
+
+    func becameActive() async {
+        // iOS can suspend the app before it receives the end notification.
+        if autoResume, pausedReason != nil { _ = resumeRecording(manual: false) }
+        await maintainAudio()
+    }
+
+    private func scheduleResume() {
+        guard autoResume, pausedReason != nil, !waitingForSystem else { return }
+        resumeTask?.cancel()
+        resumeTask = Task {
+            // Audio routes can take time to become available after an interruption.
+            var delay = 2
+            while !Task.isCancelled, pausedReason != nil, !waitingForSystem {
+                if resumeRecording(manual: false) { return }
+                do { try await Task.sleep(for: .seconds(delay)) } catch { return }
+                delay = min(60, delay * 2)
+            }
+        }
+    }
+
+    @discardableResult
+    func resumeRecording(manual: Bool = true) -> Bool {
+        guard let capture, pausedReason != nil, !isBusy else { return false }
+        do {
+            try capture.start(resuming: true)
+            pausedReason = nil
+            waitingForSystem = false
+            return true
+        } catch {
+            if manual { problem = error.localizedDescription }
+            return false
+        }
     }
 
     func analyze(_ id: UUID) {
-        guard analyzingID == nil, capture == nil, !isBusy,
+        guard analyzingID == nil, capture == nil, !isBusy, !managingAudio,
               let archive, let night = nights.first(where: { $0.id == id }), night.needsAnalysis else { return }
         analysisProblems[id] = nil
         analysisProgress = night.analysisProgress
@@ -201,6 +274,7 @@ final class SessionModel: NSObject, ObservableObject, AVAudioPlayerDelegate {
         analyzingID = nil
         analysisTask = nil
         analysisProblems[id] = problem
+        Task { await maintainAudio() }
     }
 
     @discardableResult
@@ -245,7 +319,7 @@ final class SessionModel: NSObject, ObservableObject, AVAudioPlayerDelegate {
             return
         }
         #endif
-        guard analyzingID != night.id else { return }
+        guard analyzingID != night.id, !managingAudio else { return }
         stopPlayback()
         do {
             try archive?.delete(night)
@@ -257,7 +331,7 @@ final class SessionModel: NSObject, ObservableObject, AVAudioPlayerDelegate {
     }
 
     func play(_ clip: SoundClip, in night: Night, from fraction: Double = 0) {
-        guard !isSampleNight(night.id), capture == nil, !isBusy, let archive else { return }
+        guard !isSampleNight(night.id), capture == nil, !isBusy, !managingAudio, let url = audioURL(for: clip, in: night) else { return }
         let alreadyPlaying = playingID == clip.id
         stopPlayback()
         guard !alreadyPlaying else { return }
@@ -265,7 +339,7 @@ final class SessionModel: NSObject, ObservableObject, AVAudioPlayerDelegate {
             let audio = AVAudioSession.sharedInstance()
             try audio.setCategory(.playback, mode: .default)
             try audio.setActive(true)
-            let player = try AVAudioPlayer(contentsOf: archive.clipURL(clip, in: night))
+            let player = try AVAudioPlayer(contentsOf: url)
             player.delegate = self
             self.player = player
             player.currentTime = min(fraction * player.duration, max(0, player.duration - 0.01))
@@ -290,7 +364,40 @@ final class SessionModel: NSObject, ObservableObject, AVAudioPlayerDelegate {
 
     func audioURL(for clip: SoundClip, in night: Night) -> URL? {
         guard !isSampleNight(night.id) else { return nil }
-        return archive?.clipURL(clip, in: night)
+        guard let url = archive?.clipURL(clip, in: night), FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return url
+    }
+
+    func maintainAudio(clearOlderThan days: Int? = nil) async {
+        guard let archive, !managingAudio, !isBusy, analyzingID == nil, capture == nil else { return }
+        managingAudio = true
+        defer { managingAudio = false }
+        let retention = UserDefaults.standard.integer(forKey: "retentionDays")
+        let cutoff = (days ?? (retention > 0 ? retention : nil)).flatMap {
+            Calendar.current.date(byAdding: .day, value: -$0, to: Date())
+        }
+        let sessions = nights
+        if let cutoff, let playingID, sessions.contains(where: {
+            !$0.needsAnalysis && $0.endedAt <= cutoff && ($0.id == playingID || $0.clips.contains { $0.id == playingID })
+        }) { stopPlayback() }
+        do {
+            storageBytes = try await Task.detached(priority: .utility) {
+                try archive.measureAudio(sessions, removingBefore: cutoff)
+            }.value
+        } catch { problem = error.localizedDescription }
+    }
+
+    func export(id: UUID?, audio: Bool) async throws -> URL {
+        guard let archive, !managingAudio, !isBusy, capture == nil, analyzingID == nil else {
+            throw CocoaError(.fileLocking)
+        }
+        let sessions = nights.filter { id == nil || $0.id == id }
+        guard !sessions.isEmpty else { throw CocoaError(.fileNoSuchFile) }
+        managingAudio = true
+        defer { managingAudio = false }
+        return try await Task.detached(priority: .utility) {
+            try archive.export(sessions, audio: audio)
+        }.value
     }
 
     func stopPlayback() {

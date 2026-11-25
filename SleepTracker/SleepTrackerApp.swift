@@ -40,6 +40,9 @@ struct SleepTrackerView: View {
             TrendsView(sessions: model.historyNights) { selectedNight = $0 }
                 .tabItem { Label("Trends", systemImage: "chart.bar") }
                 .tag(2)
+            SettingsView()
+                .tabItem { Label("Settings", systemImage: "gearshape") }
+                .tag(3)
         }
         .tint(accent)
         .sheet(item: $selectedNight, onDismiss: model.stopPlayback) { night in
@@ -61,9 +64,10 @@ struct SleepTrackerView: View {
         } message: {
             Text(model.problem ?? "")
         }
-        .onChange(of: scenePhase) { _, phase in
+        .onChange(of: scenePhase, initial: true) { _, phase in
             // Recording can continue while locked. Analysis needs the app open.
             if phase != .active { model.pauseAnalysis() }
+            else { Task { await model.becameActive() } }
         }
         .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)) { note in
             Task { await model.handleInterruption(note) }
@@ -83,18 +87,22 @@ struct SleepTrackerView: View {
                 .frame(maxWidth: .infinity)
 
                 VStack(spacing: 16) {
-                    MoonDial(listening: model.startedAt != nil)
+                    MoonDial(listening: model.startedAt != nil && model.pausedReason == nil)
                         .frame(height: 230)
                         .accessibilityHidden(true)
 
                     if let startedAt = model.startedAt {
-                        Text("Listening").font(.largeTitle.weight(.semibold))
+                        Text(model.pausedReason == nil ? "Listening" : "Recording paused").font(.largeTitle.weight(.semibold))
                         Text(startedAt, style: .timer)
                             .font(.title2.monospacedDigit())
                             .foregroundStyle(accent)
-                            .accessibilityLabel("Elapsed recording time")
-                        Text("You can lock your iPhone while listening.")
-                            .foregroundStyle(muted)
+                            .accessibilityLabel("Elapsed session time")
+                        if let reason = model.pausedReason {
+                            Text(reason).foregroundStyle(muted)
+                            Button("Resume listening") { model.resumeRecording() }
+                        } else {
+                            Text("You can lock your iPhone while listening.").foregroundStyle(muted)
+                        }
                     } else {
                         Text("Ready for bed?")
                             .font(.system(.largeTitle, design: .rounded, weight: .semibold))
@@ -125,8 +133,8 @@ struct SleepTrackerView: View {
                             .foregroundStyle(nightBackground)
                     }
                     .buttonStyle(.plain)
-                    .disabled(model.isBusy || model.analyzingID != nil)
-                    .opacity(model.isBusy || model.analyzingID != nil ? 0.55 : 1)
+                    .disabled(model.isBusy || model.managingAudio || model.analyzingID != nil)
+                    .opacity(model.isBusy || model.managingAudio || model.analyzingID != nil ? 0.55 : 1)
                     .padding(.top, 10)
 
                     if model.isBusy {
@@ -318,8 +326,18 @@ private struct NightDetail: View {
                             SoundCountValue(night: night)
                         }
                     }
-                    Text("Estimated from session length")
+                    Text("Estimated from recorded time")
                         .font(.footnote).foregroundStyle(muted)
+                    if let full = night.fullRecording, model.audioURL(for: full, in: night) != nil {
+                        Button(model.playingID == full.id ? "Stop full recording" : "Play full recording",
+                               systemImage: model.playingID == full.id ? "stop.circle" : "play.circle") {
+                            model.play(full, in: night)
+                        }.disabled(model.startedAt != nil || model.isBusy || model.managingAudio)
+                    }
+                    ForEach(night.gaps ?? [], id: \.start) { gap in
+                        Text("\(gap.reason) · \(gap.start.formatted(date: .omitted, time: .standard)) – \((gap.end ?? night.endedAt).formatted(date: .omitted, time: .standard))")
+                            .font(.footnote).foregroundStyle(muted)
+                    }
                     checkInCard
                     if night.wasInterrupted {
                         Label("Listening ended early. This session may be incomplete.", systemImage: "exclamationmark.circle")
@@ -341,7 +359,7 @@ private struct NightDetail: View {
                             .foregroundStyle(muted)
                         Button("Analyze remaining audio") { model.analyze(night.id) }
                             .buttonStyle(.bordered)
-                            .disabled(model.startedAt != nil || model.isBusy || model.analyzingID != nil)
+                            .disabled(model.startedAt != nil || model.isBusy || model.managingAudio || model.analyzingID != nil)
                     }
 
                     if let problem = model.analysisProblems[night.id] {
@@ -484,6 +502,7 @@ private struct NightCheckInEditor: View {
                                 else { draft.tags.remove(tag) }
                             }
                         ))
+                        .tint(accent)
                     }
                 }
                 .listRowBackground(surface)
@@ -521,14 +540,14 @@ struct ClipRow: View {
     @State private var waveformFailed = false
 
     private var isPlaying: Bool { model.playingID == clip.id }
-    private var isSample: Bool { model.isSampleNight(night.id) }
+    private var audioAvailable: Bool { model.audioURL(for: clip, in: night) != nil }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 12) {
-                if isSample {
-                    Image(systemName: "waveform").font(.title2).foregroundStyle(accent)
-                        .accessibilityHidden(true)
+                if !audioAvailable {
+                    Image(systemName: "waveform.slash").font(.title2).foregroundStyle(muted)
+                        .accessibilityLabel("Audio unavailable")
                 } else {
                     Button {
                         model.play(clip, in: night, from: startFraction)
@@ -539,7 +558,7 @@ struct ClipRow: View {
                             .frame(minWidth: 44, minHeight: 44)
                     }
                     .accessibilityLabel(isPlaying ? "Stop clip" : "Play \(clip.soundTitle)")
-                    .disabled(model.startedAt != nil || model.isBusy)
+                    .disabled(model.startedAt != nil || model.isBusy || model.managingAudio)
                 }
 
                 VStack(alignment: .leading, spacing: 4) {
@@ -562,7 +581,7 @@ struct ClipRow: View {
                 .accessibilityLabel("Clip options")
                 .disabled(model.analyzingID == night.id)
 
-                if !isSample {
+                if audioAvailable {
                     Button {
                         expanded.toggle()
                     } label: {
@@ -691,6 +710,7 @@ private struct ClipLabelEditor: View {
                                 else { selected.remove(sound) }
                             }
                         ))
+                        .tint(accent)
                     }
                 } footer: {
                     if selected.isEmpty {

@@ -10,10 +10,13 @@ struct TrendNight: Identifiable {
     var id: Date { date }
     var duration: TimeInterval { sessions.reduce(0) { $0 + $1.duration } }
 
-    private var analyzedSessions: [Night] { sessions.filter { !$0.needsAnalysis } }
+    private var analyzedSessions: [Night] { sessions.filter { !$0.needsAnalysis && $0.options?.sounds.isEmpty != true } }
 
     func episodeCount(for sound: NightSound?) -> Int? {
-        let analyzed = analyzedSessions
+        let analyzed = analyzedSessions.filter { night in
+            guard let sound, let options = night.options else { return true }
+            return options.sounds.contains(sound) || night.activeClips.contains { $0.labels.contains(sound) }
+        }
         guard !analyzed.isEmpty else { return nil }
         return analyzed.flatMap(\.episodes).count { sound == nil || $0.sound == sound }
     }
@@ -176,7 +179,7 @@ struct TrendsView: View {
             .tint(accent)
 
             if counts.allSatisfy({ $0 == nil }) {
-                Text("Analyze a session to see sound trends.")
+                Text("No analyzed nights for this sound selection.")
                     .font(.subheadline).foregroundStyle(muted)
             } else {
                 Text("Detected episodes per night")
@@ -260,6 +263,7 @@ struct TrendsView: View {
 
         return trendCard("Bedtime consistency", help: "Circles show when recording started and diamonds show when it ended. Dashed lines show your goals when enabled. Later times appear higher as the night progresses through midnight. Changing bedtime sets the wake-up goal to eight hours later.") {
             Toggle("Bedtime goal", isOn: $bedtimeGoalEnabled)
+                .tint(accent)
                 .font(.subheadline)
             if bedtimeGoalEnabled {
                 HStack(spacing: 6) {
