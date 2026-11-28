@@ -147,13 +147,6 @@ struct SleepTrackerView: View {
                 }
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: .infinity)
-
-                if let latest = model.nights.first, model.startedAt == nil {
-                    Button { selectedNight = latest } label: {
-                        NightRow(night: latest, title: "Last session")
-                    }
-                    .buttonStyle(.plain)
-                }
             }
             .frame(maxWidth: 460)
             .padding(.horizontal, 24)

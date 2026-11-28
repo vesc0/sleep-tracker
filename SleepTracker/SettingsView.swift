@@ -2,6 +2,32 @@
 import SwiftUI
 import UserNotifications
 
+struct SleepSchedule: DynamicProperty {
+    @AppStorage("bedtimeGoalEnabled") var enabled = false
+    @AppStorage("bedtimeGoalMinutes") var bedtimeMinutes = 23 * 60
+    @AppStorage("customWakeGoalMinutes") private var customWakeGoalMinutes = -1
+
+    private var suggestedWakeMinutes: Int { (bedtimeMinutes + 8 * 60) % 1440 }
+    var wakeMinutes: Int { customWakeGoalMinutes < 0 ? suggestedWakeMinutes : customWakeGoalMinutes }
+
+    func setBedtime(minutes: Int) {
+        if minutes != bedtimeMinutes {
+            bedtimeMinutes = minutes
+            customWakeGoalMinutes = -1
+        }
+    }
+
+    func setWakeTime(minutes: Int) { customWakeGoalMinutes = minutes }
+}
+
+extension Calendar {
+    func clockTime(minutes: Int) -> Date? {
+        // A fixed winter date keeps clock labels independent of today's DST transition.
+        guard let reference = self.date(from: DateComponents(year: 2026, month: 1, day: 15)) else { return nil }
+        return self.date(bySettingHour: minutes / 60, minute: minutes % 60, second: 0, of: reference)
+    }
+}
+
 private struct ReminderSchedule: Equatable {
     let enabled: Bool
     let minutes: Int
@@ -48,6 +74,9 @@ private struct SoundPreference: View {
 }
 
 struct SettingsView: View {
+    private var sleepSchedule = SleepSchedule()
+    @Environment(\.calendar) private var calendar
+    @Environment(\.timeZone) private var timeZone
     @EnvironmentObject private var model: SessionModel
     @AppStorage("bedtimeReminder") private var reminder = false
     @AppStorage("reminderMinutes") private var minutes = 22 * 60 + 30
@@ -69,6 +98,7 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
+                sleepScheduleSection
                 reminderSection
                 Section("Sounds to detect") {
                     ForEach(NightSound.allCases, id: \.self) { SoundPreference($0) }
@@ -127,6 +157,55 @@ struct SettingsView: View {
                 ExportPicker(file: file)
             }
         }
+    }
+
+    private var localCalendar: Calendar {
+        var local = calendar
+        local.timeZone = timeZone
+        return local
+    }
+
+    private var sleepScheduleSection: some View {
+        Section("Sleep Schedule") {
+            Toggle("Bedtime goal", isOn: sleepSchedule.$enabled)
+            if sleepSchedule.enabled {
+                HStack(spacing: 6) {
+                    goalPicker("Bedtime", selection: bedtimeGoal)
+                    Spacer(minLength: 0)
+                    goalPicker("Wake up", selection: wakeGoal)
+                }
+            }
+        }.listRowBackground(surface)
+    }
+
+    private func goalPicker(_ title: String, selection: Binding<Date>) -> some View {
+        HStack(spacing: 4) {
+            Text(title).font(.subheadline).foregroundStyle(muted).lineLimit(1)
+            DatePicker(title, selection: selection, displayedComponents: .hourAndMinute)
+                .datePickerStyle(.compact)
+                .labelsHidden()
+        }
+    }
+
+    private var bedtimeGoal: Binding<Date> {
+        Binding(
+            get: { localCalendar.clockTime(minutes: sleepSchedule.bedtimeMinutes) ?? .now },
+            set: {
+                let parts = localCalendar.dateComponents([.hour, .minute], from: $0)
+                let minutes = (parts.hour ?? 23) * 60 + (parts.minute ?? 0)
+                sleepSchedule.setBedtime(minutes: minutes)
+            }
+        )
+    }
+
+    private var wakeGoal: Binding<Date> {
+        Binding(
+            get: { localCalendar.clockTime(minutes: sleepSchedule.wakeMinutes) ?? .now },
+            set: {
+                let parts = localCalendar.dateComponents([.hour, .minute], from: $0)
+                sleepSchedule.setWakeTime(minutes: (parts.hour ?? 7) * 60 + (parts.minute ?? 0))
+            }
+        )
     }
 
     private var reminderSection: some View {

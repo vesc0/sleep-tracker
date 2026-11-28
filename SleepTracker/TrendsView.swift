@@ -70,12 +70,7 @@ struct TrendsView: View {
     private enum SelectedChart { case duration, sounds }
     @State private var selection: (chart: SelectedChart, day: Int)?
     @State private var comparisonTag = NightTag.lateCaffeine
-    @AppStorage("bedtimeGoalEnabled") private var bedtimeGoalEnabled = false
-    @AppStorage("bedtimeGoalMinutes") private var bedtimeGoalMinutes = 23 * 60
-    @AppStorage("customWakeGoalMinutes") private var customWakeGoalMinutes = -1
-
-    private var suggestedWakeMinutes: Int { (bedtimeGoalMinutes + 8 * 60) % 1440 }
-    private var wakeGoalMinutes: Int { customWakeGoalMinutes < 0 ? suggestedWakeMinutes : customWakeGoalMinutes }
+    private var sleepSchedule = SleepSchedule()
 
     private var localCalendar: Calendar {
         var local = calendar
@@ -254,24 +249,14 @@ struct TrendsView: View {
         let sessions = nights.flatMap(\.sessions)
         let starts = sessions.map { timingHour($0.startedAt, relativeTo: $0.startedAt) }
         let ends = sessions.map { timingHour($0.endedAt, relativeTo: $0.startedAt) }
-        let goal = Double(bedtimeGoalMinutes) / 60 + (bedtimeGoalMinutes < 12 * 60 ? 24 : 0)
-        let wakeOffset = (wakeGoalMinutes - bedtimeGoalMinutes + 1440) % 1440
+        let goal = Double(sleepSchedule.bedtimeMinutes) / 60 + (sleepSchedule.bedtimeMinutes < 12 * 60 ? 24 : 0)
+        let wakeOffset = (sleepSchedule.wakeMinutes - sleepSchedule.bedtimeMinutes + 1440) % 1440
         let wakeGoalHour = goal + Double(wakeOffset == 0 ? 1440 : wakeOffset) / 60
-        let bounds = starts + ends + (bedtimeGoalEnabled ? [goal, wakeGoalHour] : [])
+        let bounds = starts + ends + (sleepSchedule.enabled ? [goal, wakeGoalHour] : [])
         let lower = floor((bounds.min() ?? 20) / 2) * 2 - 0.5
         let upper = ceil((bounds.max() ?? 32) / 2) * 2 + 0.5
 
-        return trendCard("Bedtime consistency", help: "Circles show when recording started and diamonds show when it ended. Dashed lines show your goals when enabled. Later times appear higher as the night progresses through midnight. Changing bedtime sets the wake-up goal to eight hours later.") {
-            Toggle("Bedtime goal", isOn: $bedtimeGoalEnabled)
-                .tint(accent)
-                .font(.subheadline)
-            if bedtimeGoalEnabled {
-                HStack(spacing: 6) {
-                    goalPicker("Bedtime", selection: bedtimeGoal)
-                    Spacer(minLength: 0)
-                    goalPicker("Wake up", selection: wakeGoal)
-                }
-            }
+        return trendCard("Bedtime consistency", help: "Circles show when recording started and diamonds show when it ended. Dashed lines show your goals when enabled. Later times appear higher as the night progresses through midnight. You can edit your goals in Settings under Sleep Schedule.") {
             if sessions.isEmpty {
                 Text("Record a session to see start and end times.")
                     .font(.subheadline).foregroundStyle(muted)
@@ -295,7 +280,7 @@ struct TrendsView: View {
                                 .accessibilityValue(session.endedAt.formatted(date: .omitted, time: .shortened))
                         }
                     }
-                    if bedtimeGoalEnabled {
+                    if sleepSchedule.enabled {
                         RuleMark(y: .value("Bedtime goal", goal))
                             .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
                             .foregroundStyle(accent.opacity(0.7))
@@ -308,7 +293,7 @@ struct TrendsView: View {
                 .chartYAxis {
                     AxisMarks(values: .automatic(desiredCount: 4)) { value in
                         AxisGridLine()
-                        if let hour = value.as(Double.self), let time = clockTime(minutes: Int((hour * 60).rounded()) % 1440) {
+                        if let hour = value.as(Double.self), let time = localCalendar.clockTime(minutes: Int((hour * 60).rounded()) % 1440) {
                             AxisValueLabel { Text(time, format: .dateTime.hour().minute()) }
                         }
                     }
@@ -316,45 +301,6 @@ struct TrendsView: View {
                 .modifier(NightChartAxis(nights: nights))
             }
         }
-    }
-
-    private func goalPicker(_ title: String, selection: Binding<Date>) -> some View {
-        HStack(spacing: 4) {
-            Text(title).font(.subheadline).foregroundStyle(muted).lineLimit(1)
-            DatePicker(title, selection: selection, displayedComponents: .hourAndMinute)
-                .datePickerStyle(.compact)
-                .labelsHidden()
-        }
-    }
-
-    private var bedtimeGoal: Binding<Date> {
-        Binding(
-            get: { clockTime(minutes: bedtimeGoalMinutes) ?? .now },
-            set: {
-                let parts = localCalendar.dateComponents([.hour, .minute], from: $0)
-                let minutes = (parts.hour ?? 23) * 60 + (parts.minute ?? 0)
-                if minutes != bedtimeGoalMinutes {
-                    bedtimeGoalMinutes = minutes
-                    customWakeGoalMinutes = -1
-                }
-            }
-        )
-    }
-
-    private var wakeGoal: Binding<Date> {
-        Binding(
-            get: { clockTime(minutes: wakeGoalMinutes) ?? .now },
-            set: {
-                let parts = localCalendar.dateComponents([.hour, .minute], from: $0)
-                customWakeGoalMinutes = (parts.hour ?? 7) * 60 + (parts.minute ?? 0)
-            }
-        )
-    }
-
-    private func clockTime(minutes: Int) -> Date? {
-        // A fixed winter date keeps clock labels independent of today's DST transition.
-        guard let reference = localCalendar.date(from: DateComponents(year: 2026, month: 1, day: 15)) else { return nil }
-        return localCalendar.date(bySettingHour: minutes / 60, minute: minutes % 60, second: 0, of: reference)
     }
 
     private func timingHour(_ time: Date, relativeTo start: Date) -> Double {
