@@ -14,6 +14,7 @@ targets:
       properties:
         CFBundleDisplayName: Sleep tracker
         UILaunchScreen: {}
+        NSAlarmKitUsageDescription: Sleep tracker schedules the wake-up alarms you set on the Track tab.
         NSMicrophoneUsageDescription: Sleep tracker records audio during sessions you start and analyzes it on this iPhone to detect nighttime sounds such as snoring, talking, and coughing.
         UIBackgroundModes: [audio]
     settings:

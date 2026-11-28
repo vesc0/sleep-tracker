@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		04232CB7BA7F1F2643A38957 /* SleepTrackerApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DE93E4F6FEFECF52BDC7980 /* SleepTrackerApp.swift */; };
 		D9B927DD82114B41A620056C /* TrendsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1EE2B32B17424406B6B6CEB6 /* TrendsView.swift */; };
+		83BF17C8CBE54342805BC53B /* TrackView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8938652B170E40C4AA2B7421 /* TrackView.swift */; };
 		A771372B5992F35B080B057B /* Night.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8263C0F6BFDCCD37DDDACEE9 /* Night.swift */; };
 		A46578929ADF444BA0FF3033 /* ArchiveManagement.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E1ADF331FF346348C11D504 /* ArchiveManagement.swift */; };
 		33A8D4F4B9A2418DB02E6533 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7821EA19CD04AA1AA325319 /* SettingsView.swift */; };
@@ -23,6 +24,7 @@
 		06C18445D66A8CBC60434C37 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		3DE93E4F6FEFECF52BDC7980 /* SleepTrackerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SleepTrackerApp.swift; sourceTree = "<group>"; };
 		1EE2B32B17424406B6B6CEB6 /* TrendsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrendsView.swift; sourceTree = "<group>"; };
+		8938652B170E40C4AA2B7421 /* TrackView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackView.swift; sourceTree = "<group>"; };
 		4CDAD369BD6D9C3CEA151C63 /* SessionModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionModel.swift; sourceTree = "<group>"; };
 		777177D2912BDDA25EBFA2F1 /* SleepTracker.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SleepTracker.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		8263C0F6BFDCCD37DDDACEE9 /* Night.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Night.swift; sourceTree = "<group>"; };
@@ -62,6 +64,7 @@
 				8BAF40B377154DCD88322759 /* SoundEpisodes.swift */,
 				3DE93E4F6FEFECF52BDC7980 /* SleepTrackerApp.swift */,
 				1EE2B32B17424406B6B6CEB6 /* TrendsView.swift */,
+				8938652B170E40C4AA2B7421 /* TrackView.swift */,
 				4CDAD369BD6D9C3CEA151C63 /* SessionModel.swift */,
 			);
 			path = SleepTracker;
@@ -140,6 +143,7 @@
 				C5370AB61E5340B8A26382ED /* SoundEpisodes.swift in Sources */,
 				04232CB7BA7F1F2643A38957 /* SleepTrackerApp.swift in Sources */,
 				D9B927DD82114B41A620056C /* TrendsView.swift in Sources */,
+				83BF17C8CBE54342805BC53B /* TrackView.swift in Sources */,
 				CBCE02C3B86DF87ADEC8FE2C /* SessionModel.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

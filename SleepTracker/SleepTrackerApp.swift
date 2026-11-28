@@ -78,84 +78,15 @@ struct SleepTrackerView: View {
     }
 
     private var track: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                HStack(spacing: 9) {
-                    Image(systemName: "waveform").foregroundStyle(accent)
-                    Text("Sleep tracker").font(.headline.weight(.semibold))
-                }
-                .frame(maxWidth: .infinity)
-
-                VStack(spacing: 16) {
-                    MoonDial(listening: model.startedAt != nil && model.pausedReason == nil)
-                        .frame(height: 230)
-                        .accessibilityHidden(true)
-
-                    if let startedAt = model.startedAt {
-                        Text(model.pausedReason == nil ? "Listening" : "Recording paused").font(.largeTitle.weight(.semibold))
-                        Text(startedAt, style: .timer)
-                            .font(.title2.monospacedDigit())
-                            .foregroundStyle(accent)
-                            .accessibilityLabel("Elapsed session time")
-                        if let reason = model.pausedReason {
-                            Text(reason).foregroundStyle(muted)
-                            Button("Resume listening") { model.resumeRecording() }
-                        } else {
-                            Text("You can lock your iPhone while listening.").foregroundStyle(muted)
-                        }
-                    } else {
-                        Text("Ready for bed?")
-                            .font(.system(.largeTitle, design: .rounded, weight: .semibold))
-                        Text("Set your iPhone aside. Sleep tracker checks for nighttime sounds.")
-                            .foregroundStyle(muted)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-
-                    Button {
-                        Task {
-                            if model.startedAt != nil {
-                                if let night = await model.finish() {
-                                    tab = 1
-                                    selectedNight = night
-                                    if scenePhase == .active { model.analyze(night.id) }
-                                }
-                            } else {
-                                await model.start()
-                            }
-                        }
-                    } label: {
-                        Label(model.startedAt == nil ? "Start listening" : "End session",
-                              systemImage: model.startedAt == nil ? "mic" : "stop.fill")
-                            .font(.headline)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 17)
-                            .background(accent, in: RoundedRectangle(cornerRadius: 19))
-                            .foregroundStyle(nightBackground)
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(model.isBusy || model.managingAudio || model.analyzingID != nil)
-                    .opacity(model.isBusy || model.managingAudio || model.analyzingID != nil ? 0.55 : 1)
-                    .padding(.top, 10)
-
-                    if model.isBusy {
-                        ProgressView().tint(accent)
-                    } else if model.startedAt == nil {
-                        Label("Audio stays on this iPhone", systemImage: "lock")
-                            .font(.footnote)
-                            .foregroundStyle(muted)
-                    }
-                }
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: .infinity)
+        NavigationStack {
+            TrackView { night in
+                tab = 1
+                selectedNight = night
+                if scenePhase == .active { model.analyze(night.id) }
             }
-            .frame(maxWidth: 460)
-            .padding(.horizontal, 24)
-            .padding(.vertical, 20)
-            .frame(maxWidth: .infinity)
+            .navigationTitle("Track")
+            .navigationBarTitleDisplayMode(.large)
         }
-        .background(nightBackground.ignoresSafeArea())
-        .toolbarBackground(nightBackground, for: .tabBar)
-        .toolbarBackground(.visible, for: .tabBar)
     }
 
     private var history: some View {
@@ -200,32 +131,6 @@ struct SleepTrackerView: View {
         }
         .toolbarBackground(nightBackground, for: .tabBar)
         .toolbarBackground(.visible, for: .tabBar)
-    }
-}
-
-private struct MoonDial: View {
-    let listening: Bool
-
-    var body: some View {
-        ZStack {
-            Circle()
-                .fill(RadialGradient(colors: [accent.opacity(0.22), nightBackground.opacity(0)],
-                                     center: .center, startRadius: 12, endRadius: 130))
-                .frame(width: 260, height: 260)
-            ForEach([112.0, 150, 188, 226], id: \.self) { diameter in
-                Circle()
-                    .strokeBorder(accent.opacity(diameter == 112 ? 0.38 : 0.16), lineWidth: 1)
-                    .frame(width: diameter, height: diameter)
-            }
-            Circle()
-                .fill(surface)
-                .frame(width: 88, height: 88)
-            Image(systemName: listening ? "waveform" : "moon.stars.fill")
-                .font(.system(size: 32, weight: .light))
-                .foregroundStyle(accent)
-            Circle().fill(accent).frame(width: 5, height: 5).offset(x: 78, y: -52)
-            Circle().fill(accent.opacity(0.65)).frame(width: 4, height: 4).offset(x: -97, y: 57)
-        }
     }
 }
 
