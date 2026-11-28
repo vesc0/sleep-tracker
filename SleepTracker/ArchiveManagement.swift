@@ -4,7 +4,7 @@ import Foundation
 extension NightArchive {
     private func audioFiles(in night: Night) throws -> [URL] {
         try FileManager.default.contentsOfDirectory(at: folder(night.id), includingPropertiesForKeys: [.fileSizeKey])
-            .filter { $0.pathExtension == "caf" }
+            .filter { Self.audioExtensions.contains($0.pathExtension) }
     }
 
     func measureAudio(_ nights: [Night], removingBefore cutoff: Date?) throws -> Int64 {
@@ -39,7 +39,7 @@ extension NightArchive {
                 try encoder.encode(night).write(to: destination.appendingPathComponent("night.json"))
                 if audio {
                     for file in try audioFiles(in: night) {
-                        let name = file.deletingPathExtension().lastPathComponent == night.id.uuidString ? "Full recording.caf" : file.lastPathComponent
+                        let name = file.deletingPathExtension().lastPathComponent == night.id.uuidString ? "Full recording.\(file.pathExtension)" : file.lastPathComponent
                         try fm.linkItem(at: file, to: destination.appendingPathComponent(name))
                     }
                 }

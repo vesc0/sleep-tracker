@@ -54,7 +54,7 @@ struct SettingsView: View {
     @AppStorage("reminderDays") private var days = 127
     @AppStorage("autoResume") private var resume = true
     @AppStorage("keepFullAudio") private var full = false
-    @AppStorage("highQualityAudio") private var highQuality = false
+    @AppStorage("recordingQuality") private var quality = RecordingQuality.preferred()
     @AppStorage("retentionDays") private var retention = 0
     @State private var reminderTask: Task<Void, Never>?
     @State private var clearDays = 7
@@ -75,13 +75,14 @@ struct SettingsView: View {
                 }.listRowBackground(surface)
                 Section {
                     Toggle("Resume after interruptions", isOn: $resume)
-                    Picker("Audio quality", selection: $highQuality) {
-                        Text("Standard · 16 kHz").tag(false)
-                        Text("High · 44.1 kHz").tag(true)
+                    Picker("Audio quality", selection: $quality) {
+                        ForEach(RecordingQuality.allCases, id: \.self) { option in
+                            Text(option.title).tag(option)
+                        }
                     }
                     Toggle("Keep full recording", isOn: $full)
                 } header: { Text("Recording") } footer: {
-                    Text(full ? "New sessions keep the full recording and detected clips. Full audio uses about \(highQuality ? 318 : 115) MB per recorded hour, plus clip storage." : "New sessions keep only detected clips after analysis.")
+                    Text(full ? "New sessions keep the full recording and detected clips. Full audio uses about \(quality.megabytesPerHour) MB per recorded hour, plus clip storage." : "New sessions keep only detected clips after analysis.")
                 }.listRowBackground(surface)
                 storageSection
                 exportSection

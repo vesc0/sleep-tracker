@@ -49,7 +49,48 @@ struct NightCheckIn: Codable {
     var tags: Set<NightTag> = []
 }
 
+enum RecordingQuality: String, CaseIterable, Codable {
+    case compact, standard, high, pcm16, pcm44
+
+    var title: String {
+        switch self {
+        case .compact: "Compact (AAC 32 kbps)"
+        case .standard: "Standard (AAC 64 kbps)"
+        case .high: "High (AAC 128 kbps)"
+        case .pcm16: "Raw (PCM 16 kHz)"
+        case .pcm44: "Raw (PCM 44.1 kHz)"
+        }
+    }
+
+    var sampleRate: Double { self == .pcm16 ? 16_000 : 44_100 }
+
+    var aacBitRate: Int? {
+        switch self {
+        case .compact: 32_000
+        case .standard: 64_000
+        case .high: 128_000
+        case .pcm16, .pcm44: nil
+        }
+    }
+
+    var megabytesPerHour: Int {
+        let bitsPerSecond = aacBitRate ?? Int(sampleRate) * 16
+        return Int((Double(bitsPerSecond) * 3600 / 8_000_000).rounded())
+    }
+
+    static func preferred(in defaults: UserDefaults = .standard) -> Self {
+        if let raw = defaults.string(forKey: "recordingQuality"), let quality = Self(rawValue: raw) {
+            return quality
+        }
+        if let legacyHigh = defaults.object(forKey: "highQualityAudio") as? Bool {
+            return legacyHigh ? .pcm44 : .pcm16
+        }
+        return .standard
+    }
+}
+
 struct RecordingOptions: Codable {
+    let quality: RecordingQuality?
     let sounds: [NightSound]
     let sampleRate: Double
     let keepFullAudio: Bool
@@ -57,7 +98,9 @@ struct RecordingOptions: Codable {
 
     init(defaults: UserDefaults = .standard) {
         sounds = NightSound.allCases.filter { defaults.object(forKey: "detect." + $0.rawValue) as? Bool ?? true }
-        sampleRate = defaults.bool(forKey: "highQualityAudio") ? 44_100 : 16_000
+        let selected = RecordingQuality.preferred(in: defaults)
+        quality = selected
+        sampleRate = selected.sampleRate
         keepFullAudio = defaults.bool(forKey: "keepFullAudio")
         autoResume = defaults.object(forKey: "autoResume") as? Bool ?? true
     }
@@ -109,6 +152,7 @@ struct Night: Codable, Identifiable {
 }
 
 struct NightArchive {
+    static let audioExtensions: Set<String> = ["caf", "m4a"]
     let root: URL
     private static let protection = FileProtectionType.completeUntilFirstUserAuthentication
 
@@ -130,11 +174,12 @@ struct NightArchive {
     }
 
     func clipURL(_ clip: SoundClip, in night: Night) -> URL {
-        clipURL(clip.id, in: night.id)
+        clipURL(clip.id, in: night)
     }
 
-    func clipURL(_ clipID: UUID, in nightID: UUID) -> URL {
-        folder(nightID).appendingPathComponent(clipID.uuidString).appendingPathExtension("caf")
+    func clipURL(_ clipID: UUID, in night: Night) -> URL {
+        let ext = night.options?.quality?.aacBitRate == nil ? "caf" : "m4a"
+        return folder(night.id).appendingPathComponent(clipID.uuidString).appendingPathExtension(ext)
     }
 
     func begin(_ night: Night) throws {
@@ -173,7 +218,7 @@ struct NightArchive {
                 var retained = Set((night.clips + (night.pendingClips ?? [])).map { clipURL($0, in: night).lastPathComponent })
                 if let full = night.fullRecording { retained.insert(clipURL(full, in: night).lastPathComponent) }
                 for url in try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
-                where url.pathExtension == "caf" && !retained.contains(url.lastPathComponent) {
+                where Self.audioExtensions.contains(url.pathExtension) && !retained.contains(url.lastPathComponent) {
                     try FileManager.default.removeItem(at: url)
                 }
                 return night

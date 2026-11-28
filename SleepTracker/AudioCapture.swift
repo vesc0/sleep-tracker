@@ -183,11 +183,20 @@ final class AudioCapture: @unchecked Sendable {
     }
 
     private func openFile(_ id: UUID, format: AVAudioFormat) throws -> AVAudioFile {
-        let url = archive.clipURL(id, in: night.id)
+        let url = archive.clipURL(id, in: night)
         try Data().write(to: url, options: [.withoutOverwriting, .completeFileProtectionUntilFirstUserAuthentication])
         var settings = format.settings
-        settings[AVLinearPCMBitDepthKey] = 16
-        settings[AVLinearPCMIsFloatKey] = false
+        if let bitRate = night.options?.quality?.aacBitRate {
+            settings = [
+                AVFormatIDKey: kAudioFormatMPEG4AAC,
+                AVSampleRateKey: format.sampleRate,
+                AVNumberOfChannelsKey: 1,
+                AVEncoderBitRateKey: bitRate
+            ]
+        } else {
+            settings[AVLinearPCMBitDepthKey] = 16
+            settings[AVLinearPCMIsFloatKey] = false
+        }
         do {
             return try AVAudioFile(forWriting: url, settings: settings, commonFormat: format.commonFormat,
                                    interleaved: format.isInterleaved)
